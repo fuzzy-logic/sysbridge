@@ -9,28 +9,30 @@
   ],
   "actions": {
     "local-agent-status": {
-      "argv": ["~/.local/bin/local-agent", "--status"],
+      "argv": [
+        "~/.local/bin/local-agent",
+        "--status"
+      ],
       "description": "Print the local llama-server router's status (which models, which ports)",
       "confirm": true
     },
     "router-models": {
-      "argv": ["curl", "-s", "http://127.0.0.1:8080/models"],
+      "argv": [
+        "curl",
+        "-s",
+        "http://127.0.0.1:8080/models"
+      ],
       "description": "Dump the router's /models JSON (same data the dashboard shows; handy from an agent)",
       "confirm": true
     },
-    "reviewer-restart": {
-      "argv": ["systemctl", "--user", "restart", "pi-cli-safe-llm"],
-      "description": "Restart the pi-cli-safe reviewer llama-server on :8127 (clients retry; ~10 s cold start)",
-      "confirm": true
-    },
     "laya-restart": {
-      "argv": ["systemctl", "--user", "restart", "pi-cli-safe-laya"],
+      "argv": [
+        "systemctl",
+        "--user",
+        "restart",
+        "pi-cli-safe-laya"
+      ],
       "description": "Restart the pi-cli-safe Laya scorer daemon",
-      "confirm": true
-    },
-    "journal-reviewer": {
-      "argv": ["journalctl", "--user", "-u", "pi-cli-safe-llm", "-n", "50", "--no-pager"],
-      "description": "Last 50 journal lines of the reviewer service",
       "confirm": true
     }
   }

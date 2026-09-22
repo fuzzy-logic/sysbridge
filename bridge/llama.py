@@ -12,7 +12,7 @@ and one narrow write, wired in server.py:
     POST /v1/llama/<server>/load|unload  {"model": id, "confirm": true}
 
 Upstreams come from SYSBRIDGE_LLAMA_SERVERS, "name=url,name=url"; default
-"router=http://127.0.0.1:8080,reviewer=http://127.0.0.1:8127". Names match
+"router=http://127.0.0.1:8080". Names match
 ^[a-z0-9_-]{1,32}$ and become URL segments.
 
 Footguns encoded here (verified against a llama.cpp router build, 2026-09-22):
@@ -33,7 +33,7 @@ from typing import Optional
 from .registry import Registry
 
 NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
-DEFAULT_SERVERS = "router=http://127.0.0.1:8080,reviewer=http://127.0.0.1:8127"
+DEFAULT_SERVERS = "router=http://127.0.0.1:8080"
 TIMEOUT_S = 2.5
 
 

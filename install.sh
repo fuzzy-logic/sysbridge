@@ -120,7 +120,7 @@ else
 Environment=SYSBRIDGE_DIR=$DIR_VALUE
 Environment=SYSBRIDGE_PORT=$PORT
 # Environment=SYSBRIDGE_PYTHON=/usr/bin/python3
-# Environment=SYSBRIDGE_LLAMA_SERVERS=router=http://127.0.0.1:8080,reviewer=http://127.0.0.1:8127
+# Environment=SYSBRIDGE_LLAMA_SERVERS=router=http://127.0.0.1:8080
 CONF
   fi
 fi

@@ -11,7 +11,7 @@ ROUTER_MODELS = {"data": [
     {"id": "big", "status": {"value": "loaded", "args": [], "preset": "[big]\nmodel = /m/big.gguf\n"}, "meta": {"size": 10, "n_params": 5, "n_ctx": 8}},
     {"id": "small", "status": {"value": "unloaded", "args": [], "preset": "[small]\nmodel = /m/small.gguf\n"}},
 ]}
-SINGLE_MODELS = {"models": [{"name": "reviewer"}], "data": [{"id": "reviewer", "meta": {"size": 1}}]}
+SINGLE_MODELS = {"models": [{"name": "solo"}], "data": [{"id": "solo", "meta": {"size": 1}}]}
 
 
 class Fake(BaseHTTPRequestHandler):
@@ -40,7 +40,7 @@ class Fake(BaseHTTPRequestHandler):
         if u.path == "/props":
             if Fake.mode == "router" and q.get("autoload") != ["false"]:
                 return self._json(500, {"error": {"message": "TEST: autoload not disabled"}})
-            return self._json(200, {"model_alias": q.get("model", ["reviewer"])[0], "total_slots": 1, "build_info": "fake", "chat_template": "x" * 5000})
+            return self._json(200, {"model_alias": q.get("model", ["solo"])[0], "total_slots": 1, "build_info": "fake", "chat_template": "x" * 5000})
         if u.path == "/slots":
             if Fake.mode == "router" and q.get("model") == ["small"]:
                 return self._json(400, {"error": {"message": "model is not loaded"}})
@@ -88,7 +88,7 @@ class LlamaTests(unittest.TestCase):
         Fake.seen.clear()
 
     def test_parse_servers(self):
-        self.assertEqual(llama.parse_servers(None), {"router": "http://127.0.0.1:8080", "reviewer": "http://127.0.0.1:8127"})
+        self.assertEqual(llama.parse_servers(None), {"router": "http://127.0.0.1:8080"})
         self.assertEqual(llama.parse_servers("a=http://x:1/, b = https://y "), {"a": "http://x:1", "b": "https://y"})
         for bad in ["Router=http://x", "a=ftp://x", "a", "a=x"]:
             with self.assertRaises(ValueError):
@@ -115,7 +115,7 @@ class LlamaTests(unittest.TestCase):
         Fake.mode = "single"
         sv = llama.fetch_server("router", self.url)
         self.assertEqual(sv["mode"], "single")
-        self.assertEqual(sv["props"]["model_alias"], "reviewer")
+        self.assertEqual(sv["props"]["model_alias"], "solo")
         dead = llama.fetch_server("dead", "http://127.0.0.1:1")
         self.assertFalse(dead["ok"])
         self.assertIn("unreachable", dead["error"])
@@ -148,7 +148,7 @@ class LlamaTests(unittest.TestCase):
         self.assertEqual(cm.exception.status, 502)
         Fake.mode = "single"
         with self.assertRaises(llama.LlamaError) as cm:
-            llama.load_unload("router", "unload", "reviewer")
+            llama.load_unload("router", "unload", "solo")
         self.assertEqual(cm.exception.status, 409)
         self.assertFalse([s for s in Fake.seen if s[0] == "POST"])          # nothing reached the upstream
 

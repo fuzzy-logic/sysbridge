@@ -106,8 +106,8 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(m["kind"], "link")
         self.assertEqual(m["slug"], "router-ui")
         self.assertEqual(self.apps.get("router-ui")["url"], "http://127.0.0.1:8080/")
-        m = self.apps.install_link("http://localhost:8127")
-        self.assertEqual(m["title"], "localhost:8127")
+        m = self.apps.install_link("http://localhost:8181")
+        self.assertEqual(m["title"], "localhost:8181")
         for bad in ["ftp://x", "javascript:alert(1)", "", "http://"]:
             with self.assertRaises(AppsError):
                 self.apps.install_link(bad, "t")

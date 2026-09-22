@@ -48,7 +48,7 @@ http://<any>.localhost/v1/...        the API, answered on every host: an app cal
         ▼
   sysbridge (one process, port 80, routes on Host)
              →  /sys /proc rocm-smi xrt-smi df ss ps
-             →  llama-server router :8080, reviewer :8127   (SYSBRIDGE_LLAMA_SERVERS)
+             →  llama-server router :8080   (SYSBRIDGE_LLAMA_SERVERS)
 ```
 
 ## Why the design looks like this
@@ -232,7 +232,7 @@ badge it.
 Probes: `gpu` `cpu` `ram` `disk` `battery` `npu` `rocm_pids` `kfd_holders`
 `processes` `ports` `router_models` `llama` `llama_slots` `top`. The last three watch
 the llama-servers named in `SYSBRIDGE_LLAMA_SERVERS` (default
-`router=http://127.0.0.1:8080,reviewer=http://127.0.0.1:8127`); every router
+`router=http://127.0.0.1:8080`; add more as `name=url`); every router
 GET the bridge makes carries `autoload=false`. `python -m bridge --list` prints them with
 descriptions; the exact `data` shapes are in
 [docs/BUILDING-APPS.md](docs/BUILDING-APPS.md).

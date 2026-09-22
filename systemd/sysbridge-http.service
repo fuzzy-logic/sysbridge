@@ -17,7 +17,7 @@ Environment=SYSBRIDGE_PORT=80
 # The llama-servers the bridge watches for the dashboard (llama, llama_slots and
 # router_models probes): name=url, comma separated. A server that is down just
 # shows as down; the "router" entry is the one whose presets get file sizes.
-Environment=SYSBRIDGE_LLAMA_SERVERS=router=http://127.0.0.1:8080,reviewer=http://127.0.0.1:8127
+Environment=SYSBRIDGE_LLAMA_SERVERS=router=http://127.0.0.1:8080
 # 1 (default): the bridge writes the ordinary token into each served page's
 # localStorage so apps just work. 0: users paste it in the launcher's Settings.
 Environment=SYSBRIDGE_TOKEN_INJECT=1
