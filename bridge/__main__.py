@@ -24,7 +24,7 @@ import sys
 
 from . import __version__
 from .probes import REG
-from .server import Config, serve, token_path, ensure_token
+from .server import Config, serve, token_path, sensitive_token_path, ensure_token
 
 
 def main(argv=None) -> int:
@@ -50,8 +50,9 @@ def main(argv=None) -> int:
         print(json.dumps(env, indent=2, sort_keys=True))
         return 0 if env["ok"] else 1
     if a.token:
-        p = token_path()
-        print(f"{p}\n{ensure_token(p)}")
+        p, q = token_path(), sensitive_token_path()
+        print(f"token            {ensure_token(p)}   ({p})\n"
+              f"token-sensitive  {ensure_token(q)}   ({q})  — filesystem access; type it, never store it")
         return 0
 
     cfg = Config(bind=a.bind, port=a.port, extra_origins=list(a.origins), actions_file=a.actions_file, apps_root=a.apps_root)

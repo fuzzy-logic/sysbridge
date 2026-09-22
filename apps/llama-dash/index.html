@@ -2,8 +2,9 @@
   Llama Dashboard — what is my llama-server router doing right now?
 
   One file. No build, no dependencies. An ordinary sysbridge app: served from
-  http://localhost/apps/llama-dash/ and it talks to exactly one thing, the
-  bridge on its own origin (opened from file:// it uses http://localhost).
+  http://llama-dash.localhost/ (fallback http://localhost/apps/llama-dash/) and
+  it talks to exactly one thing, the bridge on its own origin (opened from
+  file:// it uses http://localhost).
   The llama-servers are the bridge's upstreams (SYSBRIDGE_LLAMA_SERVERS,
   default router :8080 + reviewer :8127) and arrive as probes:
 
@@ -156,10 +157,10 @@
 // This app talks to exactly one thing: the bridge. Served from /apps/llama-dash/ that is its own
 // origin; opened from file:// it is http://localhost. The llama-servers themselves are the bridge's
 // upstreams (SYSBRIDGE_LLAMA_SERVERS) and arrive as the `llama` / `llama_slots` probes.
-const SERVED_BY_BRIDGE = location.pathname.startsWith('/apps/');
+const SERVED_BY_BRIDGE = location.pathname.startsWith('/apps/') || /\.localhost$/.test(location.hostname);
 const DEFAULTS = { bridge: SERVED_BY_BRIDGE ? location.origin : 'http://localhost', token: '' };
-const LS_KEY = 'app:llama-dash:settings';      // same-origin apps share one localStorage: prefix own keys
-const TOKEN_KEY = 'sysbridge.token';            // shared on purpose with the launcher and other apps
+const LS_KEY = 'app:llama-dash:settings';      // prefixed for the /apps/ fallback, where apps share one origin
+const TOKEN_KEY = 'sysbridge.token';            // where the launcher's handoff (via the bridge's home script) puts it
 let S = loadSettings();
 function loadSettings() {
   let s = {}; try { s = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch (e) {}

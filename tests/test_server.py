@@ -26,6 +26,7 @@ class ServerFixture:
             f.write("// js")
         cfg = Config(bind="127.0.0.1", port=0, extra_origins=["https://allowed.example"],
                      actions_file=self.actions_path, token_file=self.token_file,
+                     sensitive_token_file=os.path.join(self.tmp.name, "rt", "token-sensitive"),
                      apps_root=self.apps_root, builtins={"dash": self.builtin_dir})
         self.srv = Bridge(cfg)
         self.port = self.srv.server_address[1]
@@ -91,13 +92,15 @@ class CorsTests(unittest.TestCase):
         self.assertEqual(h["vary"], "Origin")
 
     def test_loopback_origins(self):
-        for o in ["http://127.0.0.1:8181", "http://localhost", "http://localhost:3000", "http://[::1]:8000", "https://allowed.example"]:
+        for o in ["http://127.0.0.1:8181", "http://localhost", "http://localhost:3000", "http://[::1]:8000", "https://allowed.example",
+                  "http://llama-dash.localhost", "http://wtop.localhost:8182"]:
             st, h, _ = self.fx.request("GET", "/v1/health", {"Origin": o})
             self.assertEqual(st, 200, o)
             self.assertEqual(h["access-control-allow-origin"], o)
 
     def test_bad_origin_403_without_cors(self):
-        for o in ["https://evil.example", "http://127.0.0.1.evil.example", "http://localhost.evil", "https://127.0.0.1:8181"]:
+        for o in ["https://evil.example", "http://127.0.0.1.evil.example", "http://localhost.evil", "https://127.0.0.1:8181",
+                  "http://evil.localhost.example", "https://wtop.localhost", "http://Wtop.localhost", "http://a.b.localhost"]:
             st, h, _ = self.fx.request("GET", "/v1/probe/gpu", {"Origin": o})
             self.assertEqual(st, 403, o)
             self.assertNotIn("access-control-allow-origin", h, o)
@@ -222,6 +225,66 @@ class ActionTests(unittest.TestCase):
 
 
 APP = "<!doctype html><title>Llama Manager</title><meta name=description content='Herd them'><meta name=app-icon content='🦙'><body>v1"
+
+
+class PerAppOriginTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.fx = ServerFixture(actions_json=None)
+        cls.tok = cls.fx.srv.token
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.close()
+
+    def test_app_host_serves_the_app(self):
+        st, h, data = self.fx.raw("GET", "/", {"Host": "dash.localhost"})
+        self.assertEqual(st, 200)
+        self.assertIn(b"Llama Dashboard", data)
+        self.assertIn(b"data-sysbridge-home", data)
+        self.assertIn(b'"http://localhost/"', data)                       # absolute launcher link, port 80 implied
+        st, h, data = self.fx.raw("GET", "/", {"Host": "dash.localhost:8182"})
+        self.assertIn(b'"http://localhost:8182/"', data)                   # dev port carried through
+        st, h, data = self.fx.raw("GET", "/app.js", {"Host": "dash.localhost"})
+        self.assertEqual(st, 200)
+        self.assertTrue(h["content-type"].startswith("text/javascript"))
+        self.assertNotIn(b"data-sysbridge-home", data)
+        self.assertIn(b"sysbridge-token=", self.fx.raw("GET", "/", {"Host": "dash.localhost"})[2])  # handoff snippet
+
+    def test_app_host_api_and_launcher_paths_still_work(self):
+        st, _, b = self.fx.request("GET", "/v1/health", {"Host": "dash.localhost"})
+        self.assertEqual(st, 200)
+        self.assertTrue(b["ok"])
+        st, _, data = self.fx.raw("GET", "/apps/dash/", {"Host": "dash.localhost"})
+        self.assertEqual(st, 200)
+        st, _, data = self.fx.raw("GET", "/", {"Host": "localhost"})
+        self.assertNotIn(b"data-sysbridge-home", data)                    # launcher is never injected
+        self.assertIn(b"<title>sysbridge</title>", data)
+        st, _, data = self.fx.raw("GET", "/", {"Host": "127.0.0.1:8182"})
+        self.assertIn(b"<title>sysbridge</title>", data)
+
+    def test_unknown_app_host_and_traversal(self):
+        st, _, b = self.fx.request("GET", "/", {"Host": "nosuch.localhost"})
+        self.assertEqual(st, 404)
+        self.assertIn("http://localhost/", b["error"]["message"])
+        for bad in ["/../../etc/passwd", "/%2e%2e/etc/passwd", "/manifest.json/../../../etc/passwd"]:
+            st, _, _ = self.fx.raw("GET", bad, {"Host": "dash.localhost"})
+            self.assertEqual(st, 404, bad)
+
+    def test_link_app_host_redirects(self):
+        H = {"X-Bridge-Token": self.tok, "Origin": "http://localhost", "Content-Type": "application/json"}
+        self.fx.request("POST", "/v1/apps", H, json.dumps({"kind": "link", "url": "http://127.0.0.1:8080/", "title": "Router UI"}).encode())
+        st, h, _ = self.fx.raw("GET", "/", {"Host": "router-ui.localhost"})
+        self.assertEqual(st, 302)
+        self.assertEqual(h["location"], "http://127.0.0.1:8080/")
+        self.fx.request("DELETE", "/v1/apps/router-ui", H, b'{"confirm":true}')
+
+    def test_two_token_classes(self):
+        self.assertNotEqual(self.fx.srv.token, self.fx.srv.sensitive_token)
+        p = os.path.join(self.fx.tmp.name, "rt", "token-sensitive")
+        self.assertEqual(oct(os.stat(p).st_mode & 0o777), "0o600")
+        st, _, _ = self.fx.request("POST", "/v1/apps", {"X-Bridge-Sensitive-Token": self.fx.srv.sensitive_token, "Content-Type": "text/html"}, b"<title>x</title>")
+        self.assertEqual(st, 401)                                          # the sensitive token is not a super-token
 
 
 class LlamaApiTests(unittest.TestCase):

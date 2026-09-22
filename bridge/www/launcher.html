@@ -1,9 +1,10 @@
 <!--
   sysbridge launcher — the page at http://localhost/
 
-  A home screen for the .html apps installed on this bridge. Same origin as the
-  API, so apps never need a bridge URL and one pasted token (localStorage key
-  "sysbridge.token") serves the launcher and every app.
+  A home screen for the .html apps installed on this bridge. Each app is served
+  on its own origin, http://<slug>.localhost/, so the browser isolates apps from
+  one another; the token pasted here is handed to an app in the URL fragment
+  when you open it (never sent to the server, stripped from the address bar).
 
   Install = upload one .html: the name is its <title>, the subtitle its
   <meta name="description">, the icon <meta name="app-icon" content="🦙">.
@@ -126,7 +127,7 @@
 <dialog id="settingsDlg">
   <h3>Settings</h3>
   <dl id="sInfo"></dl>
-  <label>Bridge token — needed to install or uninstall apps and to run actions. Shared with every app on this origin.</label>
+  <label>Bridge token — needed to install or uninstall apps, run actions, load/unload models. Handed to each app when you open it from here.</label>
   <input id="sToken" autocomplete="off" spellcheck="false">
   <div class="muted" style="font-size:.8rem;margin-top:.3rem">Get it with <code>python -m bridge --token</code> (it lives in <code>$XDG_RUNTIME_DIR/sysbridge/token</code> and is never served over HTTP).</div>
   <div class="actions"><button type="button" id="sClose">Close</button><button type="button" class="primary" id="sSave">Save</button></div>
@@ -166,8 +167,14 @@ function iconHTML(a, cls = 'icon') {
   const isEmoji = /\p{Extended_Pictographic}/u.test(a.icon || '');
   return `<div class="${cls}${isEmoji ? '' : ' text'}${a.kind === 'link' ? ' link' : ''}">${esc(a.icon || '?')}</div>`;
 }
+// Every app gets its own origin, http://<slug>.localhost[:port]/, so the browser isolates its storage
+// from every other app's. The launcher hands the token over in the URL fragment (never sent to the
+// server); the bridge's injected home script stores it in that origin and strips it from the URL.
+const PORT = location.port && location.port !== '80' ? ':' + location.port : '';
+const appOrigin = a => `http://${a.slug}.localhost${PORT}/`;
+const appHref = a => a.kind === 'link' ? a.url : appOrigin(a) + (token() ? '#sysbridge-token=' + encodeURIComponent(token()) : '');
 function render() {
-  const tiles = apps.map(a => `<a class="tile" href="/apps/${esc(a.slug)}/" data-slug="${esc(a.slug)}" ${a.kind === 'link' ? 'target="_blank" rel="noopener"' : ''}>
+  const tiles = apps.map(a => `<a class="tile" href="${esc(appHref(a))}" data-slug="${esc(a.slug)}" ${a.kind === 'link' ? 'target="_blank" rel="noopener"' : ''}>
       ${iconHTML(a)}<div class="name">${esc(a.title)}</div><div class="desc">${esc(a.description || (a.kind === 'link' ? a.url : ''))}</div>
       <button class="more" data-more="${esc(a.slug)}" title="Details">⋯</button></a>`);
   tiles.push(`<a class="tile add" href="#" id="addTile"><div class="icon">＋</div><div class="name muted">Add</div></a>`);
@@ -184,16 +191,18 @@ function openApp(slug) {
   const a = apps.find(x => x.slug === slug); if (!a) return;
   $('aTitle').innerHTML = `${iconHTML(a, 'icon')} ${esc(a.title)}`; $('aTitle').style.display = 'flex'; $('aTitle').style.gap = '.6rem'; $('aTitle').style.alignItems = 'center';
   $('aTitle').querySelector('.icon').style.cssText = 'width:2.2rem;height:2.2rem;font-size:1.3rem;border-radius:.6rem';
-  const rows = [['url', `<code>/apps/${esc(a.slug)}/</code>${a.kind === 'link' ? ' → ' + esc(a.url) : ''}`], ['kind', a.builtin ? 'built-in (ships with the bridge)' : a.kind]];
+  const rows = a.kind === 'link'
+    ? [['opens', esc(a.url)], ['kind', 'link tile']]
+    : [['url', `<code>${esc(appOrigin(a))}</code>`], ['fallback', `<code>${esc(location.origin)}/apps/${esc(a.slug)}/</code> <span class="muted">(shares this origin's storage)</span>`], ['kind', a.builtin ? 'built-in (ships with the bridge)' : a.kind]];
   if (a.description) rows.push(['description', esc(a.description)]);
   if (a.installed_at) rows.push(['installed', esc(a.installed_at)]);
   if (a.kind === 'html') rows.push(['size', fmtBytes(a.size)]);
   if (a.original_filename) rows.push(['uploaded as', esc(a.original_filename)]);
   if (a.sha256) rows.push(['sha256', `<code>${esc(a.sha256.slice(0, 16))}…</code>`]);
-  rows.push(['storage', `browser localStorage under <code>app:${esc(a.slug)}:</code>`]);
+  if (a.kind !== 'link') rows.push(['storage', `its own origin's localStorage (isolated from other apps)`]);
   $('aInfo').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   $('aErr').textContent = '';
-  $('aOpen').href = `/apps/${a.slug}/`; if (a.kind === 'link') { $('aOpen').target = '_blank'; } else { $('aOpen').removeAttribute('target'); }
+  $('aOpen').href = appHref(a); if (a.kind === 'link') { $('aOpen').target = '_blank'; } else { $('aOpen').removeAttribute('target'); }
   $('aUninstall').disabled = !!a.builtin; $('aUninstall').title = a.builtin ? 'built-in apps cannot be uninstalled' : '';
   $('aUninstall').onclick = () => uninstall(a);
   $('appDlg').showModal();
@@ -201,7 +210,7 @@ function openApp(slug) {
 $('aClose').onclick = () => $('appDlg').close();
 async function uninstall(a) {
   $('cTitle').textContent = `Uninstall ${a.title}?`;
-  $('cBody').innerHTML = `The app is moved to <code>.trash/</code> on the bridge, not deleted — it can be restored by hand. Its browser data under <code>app:${esc(a.slug)}:</code> stays in this browser.`;
+  $('cBody').innerHTML = `The app is moved to <code>.trash/</code> on the bridge, not deleted — it can be restored by hand. Its browser data (on <code>${esc(appOrigin(a))}</code>) stays in this browser.`;
   const ok = await confirmDlg();
   if (!ok) return;
   try {
@@ -260,7 +269,7 @@ async function pick(file) {
   $('pTitle').textContent = m.title; $('pDesc').textContent = m.description || '(no description meta)';
   const slug = m.title.normalize('NFKD').replace(/[^\x00-\x7f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
   const exists = apps.find(a => a.slug === slug);
-  $('pMeta').textContent = `${file.name} · ${fmtBytes(file.size)} · will be /apps/${slug}/` + (exists ? (exists.builtin ? ' — clashes with a built-in app' : ' — replaces the installed copy') : '');
+  $('pMeta').textContent = `${file.name} · ${fmtBytes(file.size)} · will be http://${slug}.localhost${PORT}/` + (exists ? (exists.builtin ? ' — clashes with a built-in app' : ' — replaces the installed copy') : '');
   $('preview').hidden = false; $('addGo').disabled = false;
 }
 $('addGo').onclick = async () => {

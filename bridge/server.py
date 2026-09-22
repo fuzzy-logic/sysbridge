@@ -2,9 +2,19 @@
 
 Security model (see HANDOVER.md → "Security model"):
 
-* Origin allowlist on every request: exact ``null`` (a file:// page) and
-  ``^http://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:\\d+)?$``; ``--origins`` adds
-  exact extras. A match is reflected in ``Access-Control-Allow-Origin`` with
+* Origin allowlist on every request: exact ``null`` (a file:// page),
+  ``^http://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:\\d+)?$`` and the per-app origins
+  ``^http://[a-z0-9-]+\\.localhost(:\\d+)?$``; ``--origins`` adds exact extras.
+* Per-app origins: every installed app is served at ``http://<slug>.localhost/``
+  (routing on the Host header; ``*.localhost`` resolves to loopback in browsers
+  and in systemd-resolved with no setup). The browser then isolates each app's
+  storage from every other app's — the boundary the store needs. The path form
+  ``/apps/<slug>/`` stays as a fallback. The launcher hands an app its token in
+  the URL fragment (never sent to the server); the injected home script stores
+  it in that app's own origin and strips it from the address bar.
+* Two token classes, both 0600 under ``$XDG_RUNTIME_DIR/sysbridge/``: ``token``
+  (installs, actions, load/unload — apps may keep it) and ``token-sensitive``
+  (filesystem; apps must never store it, only hold it in page memory). A match is reflected in ``Access-Control-Allow-Origin`` with
   ``Vary: Origin``. No match → 403 **without** CORS headers, so the browser
   hides the body from the page. No Origin header at all (curl) → allowed.
 * POST /v1/action/{name} additionally needs ``X-Bridge-Token`` equal to the
@@ -39,6 +49,9 @@ from .registry import error_envelope, valid_name
 from .util import xdg_runtime_dir
 
 LOOPBACK_ORIGIN_RE = re.compile(r"^http://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$")
+APP_ORIGIN_RE = re.compile(r"^http://([a-z0-9][a-z0-9-]{0,47})\.localhost(:\d+)?$")
+APP_HOST_RE = re.compile(r"^([a-z0-9][a-z0-9-]{0,47})\.localhost$")
+LAUNCHER_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 RESPONSE_CAP = 1 << 20
 MAX_STREAM_CLIENTS = 4
 MAX_CONCURRENCY = 8
@@ -53,6 +66,7 @@ class Config:
     extra_origins: list[str] = field(default_factory=list)
     actions_file: Optional[str] = None
     token_file: Optional[str] = None
+    sensitive_token_file: Optional[str] = None
     apps_root: Optional[str] = None            # default: see apps.apps_root()
     builtins: Optional[dict] = None            # default: apps/<slug>/index.html in the repo
 
@@ -60,24 +74,60 @@ class Config:
 LAUNCHER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "www", "launcher.html")
 MAX_APP_BODY = MAX_APP_BYTES + 64 * 1024
 
-# Appended to every HTML page served from /apps/<slug>/ so any uploaded app, with
-# no code of its own, gets a way back to the launcher: a small round ⌂ fixed at
-# the bottom-left, in a closed shadow root so the app's CSS cannot restyle it
-# and it cannot restyle the app. Appending after </html> is valid: browsers
-# parse trailing content into <body>. An app opts out with
-# <meta name="sysbridge-home" content="none">.
-HOME_BUTTON = """
+# Appended to every HTML page served for an app (its own host or /apps/<slug>/)
+# so any uploaded app, with no code of its own, gets a way back: a small round
+# button fixed bottom-left that unfolds into a menu — launcher, the other
+# installed apps, token state. It lives in a closed shadow root so the app's
+# CSS cannot restyle it and it cannot restyle the app. The launcher URL is
+# absolute (per-app origins would otherwise make "/" point at the app itself).
+# The same script completes the token handoff: a #sysbridge-token=… fragment
+# from the launcher is stored in this origin and stripped from the address bar.
+# Appending after </html> is valid: browsers parse trailing content into <body>.
+# An app opts out with <meta name="sysbridge-home" content="none">.
+_HOME_TEMPLATE = r"""
 <script data-sysbridge-home>(function(){
+var L=__LAUNCHER__;
+try{var m=location.hash.match(/(?:^#|&)sysbridge-token=([^&]+)/);if(m){localStorage.setItem('sysbridge.token',decodeURIComponent(m[1]));history.replaceState(null,'',location.pathname+location.search);}}catch(e){}
 if(document.querySelector('meta[name="sysbridge-home"][content="none"]'))return;
 var h=document.createElement('sysbridge-home');var r=h.attachShadow({mode:'closed'});
-r.innerHTML='<style>a{position:fixed;left:12px;bottom:12px;z-index:2147483647;width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:rgba(28,31,36,.82);color:#fff;text-decoration:none;font:20px/1 system-ui,sans-serif;box-shadow:0 1px 5px rgba(0,0,0,.45);opacity:.65;transition:opacity .15s}a:hover,a:focus{opacity:1}</style><a href="/" title="sysbridge: all apps">\u2302</a>';
+r.innerHTML='<style>'+
+':host{all:initial}'+
+'.b{position:fixed;left:12px;bottom:12px;z-index:2147483647;width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:rgba(28,31,36,.82);color:#fff;text-decoration:none;font:20px/1 system-ui,sans-serif;box-shadow:0 1px 5px rgba(0,0,0,.45);opacity:.65;cursor:pointer;border:0;transition:opacity .15s}.b:hover,.b:focus,.b.on{opacity:1}'+
+'.p{position:fixed;left:12px;bottom:56px;z-index:2147483647;min-width:220px;max-width:320px;max-height:70vh;overflow:auto;background:#171b21;color:#e5e7eb;border:1px solid #2a2f37;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.5);font:13px/1.4 system-ui,sans-serif;padding:6px;display:none}.p.on{display:block}'+
+'.p a,.p div.t{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;color:inherit;text-decoration:none}.p a:hover{background:#242932}.p .i{width:22px;text-align:center}.p .t{color:#9aa3ad;font-size:11px;padding-top:4px}.p .cur{font-weight:600}.p hr{border:0;border-top:1px solid #2a2f37;margin:4px 0}'+
+'</style><button class="b" title="sysbridge">\u2302</button><div class="p" role="menu"></div>';
+var b=r.querySelector('.b'),p=r.querySelector('.p');
+function tok(){try{return localStorage.getItem('sysbridge.token')||''}catch(e){return''}}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function port(){var m=L.match(/:(\d+)\/$/);return m?':'+m[1]:''}
+function appUrl(a){if(a.kind==='link')return a.url;var u='http://'+a.slug+'.localhost'+port()+'/';var t=tok();return t?u+'#sysbridge-token='+encodeURIComponent(t):u}
+function build(apps){var me=location.hostname.replace(/\.localhost$/,'');var cur=(location.pathname.match(/^\/apps\/([a-z0-9-]+)/)||[])[1]||me;
+var html='<div class="t">sysbridge</div><a href="'+esc(L)+'"><span class="i">\u2302</span>All apps</a><hr>';
+apps.forEach(function(a){html+='<a href="'+esc(appUrl(a))+'"'+(a.kind==='link'?' target="_blank" rel="noopener"':'')+' class="'+(a.slug===cur?'cur':'')+'"><span class="i">'+esc(a.icon)+'</span>'+esc(a.title)+(a.kind==='link'?' \u2197':'')+'</a>'});
+html+='<hr><div class="t">'+(tok()?'token present':'no token \u2014 paste it in the launcher')+'</div>';p.innerHTML=html}
+function toggle(){var on=!p.classList.contains('on');p.classList.toggle('on',on);b.classList.toggle('on',on);if(on){p.innerHTML='<div class="t">loading\u2026</div>';fetch('/v1/apps',{cache:'no-store'}).then(function(x){return x.json()}).then(build).catch(function(){p.innerHTML='<a href="'+esc(L)+'"><span class="i">\u2302</span>All apps</a>'})}}
+b.addEventListener('click',toggle);document.addEventListener('keydown',function(e){if(e.key==='Escape'&&p.classList.contains('on'))toggle()});
+document.addEventListener('click',function(e){if(p.classList.contains('on')&&e.target!==h)toggle()},true);
 document.documentElement.appendChild(h);})();</script>
-""".encode("utf-8")
+"""
+_home_cache: dict = {}
+
+
+def home_button(launcher_url: str) -> bytes:
+    b = _home_cache.get(launcher_url)
+    if b is None:
+        b = _HOME_TEMPLATE.replace("__LAUNCHER__", json.dumps(launcher_url)).encode("utf-8")
+        _home_cache[launcher_url] = b
+    return b
 
 
 # ------------------------------------------------------------------ token
 def token_path() -> str:
     return os.path.join(xdg_runtime_dir(), "sysbridge", "token")
+
+
+def sensitive_token_path() -> str:
+    return os.path.join(xdg_runtime_dir(), "sysbridge", "token-sensitive")
 
 
 def ensure_token(path: str) -> str:
@@ -108,6 +158,7 @@ class Bridge(ThreadingHTTPServer):
         self.actions = Actions(cfg.actions_file)
         self.apps = Apps(cfg.apps_root, cfg.builtins if cfg.builtins is not None else repo_builtins())
         self.token = ensure_token(cfg.token_file or token_path())
+        self.sensitive_token = ensure_token(cfg.sensitive_token_file or sensitive_token_path())
         self.sem = threading.BoundedSemaphore(MAX_CONCURRENCY)
         self.stream_clients = 0
         self.stream_lock = threading.Lock()
@@ -120,7 +171,7 @@ class Bridge(ThreadingHTTPServer):
             return True  # curl and friends: no Origin header
         if origin == "null":
             return True
-        if LOOPBACK_ORIGIN_RE.match(origin):
+        if LOOPBACK_ORIGIN_RE.match(origin) or APP_ORIGIN_RE.match(origin):
             return True
         return origin in self.cfg.extra_origins
 
@@ -204,7 +255,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(data) > MAX_APP_BODY:
             return self._send(500, {"ok": False, "error": {"type": "TooLarge", "message": "file too large to serve"}}, origin)
         if inject_home and content_type_for(path).startswith("text/html"):
-            data += HOME_BUTTON
+            data += home_button(self._launcher_url())
         self.send_response(200)
         self.send_header("Content-Type", content_type_for(path))
         self.send_header("Content-Length", str(len(data)))
@@ -226,6 +277,29 @@ class Handler(BaseHTTPRequestHandler):
         tok = self.headers.get("X-Bridge-Token", "")
         return bool(tok) and secrets.compare_digest(tok, self.server.token)
 
+    def _sensitive_ok(self) -> bool:
+        tok = self.headers.get("X-Bridge-Sensitive-Token", "")
+        return bool(tok) and secrets.compare_digest(tok, self.server.sensitive_token)
+
+    def _host(self) -> tuple[str, Optional[str], str]:
+        """(kind, slug, port_suffix) from the Host header: kind is 'launcher', 'app' or 'other'."""
+        raw = (self.headers.get("Host") or "").strip().lower()
+        if raw.startswith("["):
+            host, _, rest = raw[1:].partition("]")
+            port = rest[1:] if rest.startswith(":") else ""
+        else:
+            host, _, port = raw.partition(":")
+        suffix = f":{port}" if port and port != "80" else ""
+        if host in LAUNCHER_HOSTS or host == "":
+            return "launcher", None, suffix
+        m = APP_HOST_RE.match(host)
+        if m:
+            return "app", m.group(1), suffix
+        return "other", None, suffix
+
+    def _launcher_url(self) -> str:
+        return f"http://localhost{self._host()[2]}/"
+
     @staticmethod
     def _parse_json(raw: bytes) -> dict:
         if not raw:
@@ -244,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self._cors(origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Bridge-Token, X-Filename")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Bridge-Token, X-Bridge-Sensitive-Token, X-Filename")
         self.send_header("Access-Control-Max-Age", "600")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -263,7 +337,20 @@ class Handler(BaseHTTPRequestHandler):
             u = urlsplit(self.path)
             q = parse_qs(u.query)
             parts = [p for p in u.path.split("/") if p]
-            # -- launcher and installed apps (same origin as the API on purpose) --
+            # -- per-app origin: http://<slug>.localhost/… serves that app's files --
+            kind, host_slug, _ = self._host()
+            if kind == "app" and parts[:1] != ["v1"] and parts[:1] != ["apps"]:
+                m = self.server.apps.get(host_slug)
+                if m is None:
+                    return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": f"no app '{host_slug}' — see {self._launcher_url()}"}}, origin)
+                if m["kind"] == "link":
+                    return self._redirect(302, m["url"])
+                rel = "/".join(parts) + ("/" if u.path.endswith("/") and parts else "")
+                path = self.server.apps.resolve(host_slug, rel)
+                if path is None:
+                    return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "file not found"}}, origin)
+                return self._send_file(path, origin, inject_home=True)
+            # -- launcher (http://localhost/) and the /apps/<slug>/ path fallback --
             if u.path == "/" or u.path == "/index.html":
                 return self._send_file(LAUNCHER_PATH, origin)
             if parts[:1] == ["apps"] and len(parts) >= 2:
@@ -471,6 +558,23 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
 
+class Mirror(ThreadingHTTPServer):
+    """A second listener (::1) sharing the primary's state: apps, actions, tokens, caps."""
+    daemon_threads = True
+    allow_reuse_address = True
+    address_family = socket.AF_INET6
+
+    def __init__(self, primary: Bridge, bind: str, port: int):
+        self.primary = primary
+        super().__init__((bind, port), Handler)
+
+    def __getattr__(self, name):  # cfg, apps, actions, token, sem, … all come from the primary
+        return getattr(self.primary, name)
+
+    def origin_allowed(self, origin):
+        return self.primary.origin_allowed(origin)
+
+
 def serve(cfg: Config) -> None:
     try:
         srv = Bridge(cfg)
@@ -485,9 +589,18 @@ def serve(cfg: Config) -> None:
         raise SystemExit(2)
     port = "" if cfg.port == 80 else f":{cfg.port}"
     print(f"sysbridge {__version__} launcher at http://localhost{port}/  probes={len(REG.names())}  apps={len(srv.apps.list())}  "
-          f"actions={'enabled' if srv.actions.enabled() else 'disabled (no actions file)'}  token={token_path()}",
+          f"actions={'enabled' if srv.actions.enabled() else 'disabled (no actions file)'}  tokens={os.path.dirname(token_path())}/{{token,token-sensitive}}",
           file=sys.stderr, flush=True)
+    mirror = None
+    if cfg.bind == "127.0.0.1":
+        try:
+            mirror = Mirror(srv, "::1", cfg.port)
+            threading.Thread(target=mirror.serve_forever, kwargs={"poll_interval": 0.5}, name="ipv6", daemon=True).start()
+        except OSError as e:
+            print(f"sysbridge: not listening on [::1]:{cfg.port} ({e.strerror or e}); *.localhost still works via 127.0.0.1", file=sys.stderr, flush=True)
     try:
         srv.serve_forever(poll_interval=0.5)
     finally:
         srv.server_close()
+        if mirror:
+            mirror.server_close()
