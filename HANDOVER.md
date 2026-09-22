@@ -11,13 +11,13 @@
 ## Status — 2026-09-22, end of first build session
 
 Everything below the line was built and verified in one session. The repo is
-committed locally at `~/ai/sysbridge`; **the GitHub push (step 0) is still
-pending** — the agent's permission classifier blocked `gh repo create`, so the
-user runs it (see "Open items").
+at `~/ai/sysbridge`, pushed to github.com/fuzzy-logic/sysbridge (the agent's
+permission classifier blocked `gh repo create` until the user approved it in
+chat; the push then went through).
 
 | step | state | evidence |
 |---|---|---|
-| 0 repo + handover | local only | 6 commits on `master`; personal-data grep clean |
+| 0 repo + handover | done | pushed to `fuzzy-logic/sysbridge` `master`; personal-data grep clean before every push |
 | 1 dashboard | done | opened from :8181: router + reviewer cards healthy, 7 presets, activity 1 s, every router GET carries `autoload=false`; confirm dialog states eviction with live sizes; cancel leaves state untouched |
 | 2 bridge core | done | `--once gpu` GTT == `mem_info_gtt_used`; all 11 probes ok; `/v1/all`, `/v1/stream`, 403-no-CORS, 204 preflight verified with curl |
 | 3 actions | done | unit tests: no file → 404, no/wrong token → 401, bad Origin → 403, confirm → 400, argv from request ignored |
@@ -44,16 +44,14 @@ user runs it (see "Open items").
 
 ### Not done / open items for the user
 
-1. **Create and push the public repo** (blocked for the agent):
-   `cd ~/ai/sysbridge && gh repo create fuzzy-logic/sysbridge --public --source . --remote origin --push`
-2. **Install the unit** if wanted (reversible: symlink + drop-in, nothing copied):
+1. **Install the unit** if wanted (reversible: symlink + drop-in, nothing copied):
    see README → Install. Not done because it enables a service.
-3. **Live load/unload was not exercised** — the plan says only with the user
+2. **Live load/unload was not exercised** — the plan says only with the user
    present. The dialog was opened and cancelled; the POST path is exercised by
    the router's own API contract only.
-4. `ports` shows process names only for the bridge's user (`ss` without root);
+3. `ports` shows process names only for the bridge's user (`ss` without root);
    documented, not worked around.
-5. Optional: `pacman -S amdgpu_top` for a second opinion on GPU busy.
+4. Optional: `pacman -S amdgpu_top` for a second opinion on GPU busy.
 
 ---
 
