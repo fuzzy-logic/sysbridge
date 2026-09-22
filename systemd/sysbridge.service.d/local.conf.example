@@ -1,0 +1,8 @@
+# Copy to ~/.config/systemd/user/sysbridge.service.d/local.conf (or run
+# `systemctl --user edit sysbridge` and paste), then `systemctl --user daemon-reload`.
+# Only the values that differ from the unit's defaults belong here.
+[Service]
+Environment=SYSBRIDGE_DIR=%h/ai/sysbridge
+# Environment=SYSBRIDGE_PYTHON=/usr/bin/python3
+# Environment=SYSBRIDGE_PORT=8182
+# Environment=SYSBRIDGE_ROUTER_URL=http://127.0.0.1:8080

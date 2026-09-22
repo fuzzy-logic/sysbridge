@@ -1,0 +1,37 @@
+[Unit]
+Description=sysbridge — localhost system probes and allowlisted actions for .html apps
+Documentation=https://github.com/fuzzy-logic/sysbridge
+# The bridge is useful without the router; this only orders startup when both exist.
+After=default.target
+
+[Service]
+Type=simple
+# Override these in a drop-in (systemctl --user edit sysbridge), never here, so a
+# git pull does not clobber your paths. See sysbridge.service.d/local.conf.example.
+Environment=SYSBRIDGE_PYTHON=/usr/bin/python3
+Environment=SYSBRIDGE_DIR=%h/.local/share/sysbridge
+Environment=SYSBRIDGE_PORT=8182
+# The router whose presets the router_models probe stats. Leave as is for a
+# standard local-agent setup; the probe just reports an error if nothing answers.
+Environment=SYSBRIDGE_ROUTER_URL=http://127.0.0.1:8080
+ExecStart=/bin/sh -c 'cd "$SYSBRIDGE_DIR" && exec "$SYSBRIDGE_PYTHON" -m bridge --port "$SYSBRIDGE_PORT"'
+Restart=always
+RestartSec=3
+Nice=5
+MemoryMax=512M
+
+# Hardening, copied from pi-cli-safe with two deliberate omissions:
+#   * no ProtectProc=/ProcSubset= — the kfd_holders probe reads other processes' /proc/*/fd
+#   * no PrivateDevices=          — rocm-smi and the /dev/kfd check need the real /dev
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# %t is the per-user runtime dir (/run/user/UID) where the 0600 action token lives.
+ReadWritePaths=%t
+# xrt-smi may want a cache dir under the (read-only) home; point XDG_CACHE_HOME here.
+CacheDirectory=sysbridge
+Environment=XDG_CACHE_HOME=%C
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
