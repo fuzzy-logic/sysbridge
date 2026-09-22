@@ -21,7 +21,7 @@ chat; the push then went through).
 | 1 dashboard | done | opened from :8181: router + reviewer cards healthy, 7 presets, activity 1 s, every router GET carries `autoload=false`; confirm dialog states eviction with live sizes; cancel leaves state untouched |
 | 2 bridge core | done | `--once gpu` GTT == `mem_info_gtt_used`; all 11 probes ok; `/v1/all`, `/v1/stream`, 403-no-CORS, 204 preflight verified with curl |
 | 3 actions | done | unit tests: no file → 404, no/wrong token → 401, bad Origin → 403, confirm → 400, argv from request ignored |
-| 4 systemd | unit + drop-in written; **not installed** | every probe passes under `systemd-run -p ProtectSystem=strict -p ProtectHome=read-only -p NoNewPrivileges=true -p PrivateTmp=true` |
+| 4 systemd | unit + drop-in written (port 80, StateDirectory); **not installed** | every probe passes under `systemd-run -p ProtectSystem=strict -p ProtectHome=read-only -p NoNewPrivileges=true -p PrivateTmp=true` |
 | 5 skill + README | done | `skills/sysbridge-client/SKILL.md`, README in the measured-facts → design → install → dev order |
 
 ### Deviations from the plan (all additive)
@@ -430,6 +430,26 @@ preview parsed title before install), add-link, per-app settings view
 meta, same-origin default, shared token key, `app:llama-dash:` prefix.
 (6) Skill, README, unit (`StateDirectory`, port 80, sysctl note). (7) Browser
 verification incl. remote-origin 403 on upload.
+
+### Phase 3 status — done 2026-09-22, same session
+
+All seven steps built and verified; 55 tests. In the browser against a dev
+instance on :8182: pasted the token in Settings, uploaded a 720-byte test app
+(preview showed title/icon/slug before install), opened it at
+`/apps/hello-bridge/` where it saw `location.origin` as the bridge and the
+shared token, added a "Router UI" link tile (302 to :8080), uninstalled the
+test app (landed in `apps/.trash/hello-bridge-<ts>/`), and opened the built-in
+Llama Dashboard at `/apps/llama-dash/` with its System panel live and the ⌂
+link shown. curl: remote-origin upload → 403, traversal → 404.
+
+Two bugs found by tests on the way: `re.findall` returns `''` not `None` for
+non-matching groups (single-quoted/unquoted meta values were dropped); and a
+test-ordering dependency on the trash count.
+
+**Left for the user:** (1) the port-80 sysctl (README → Install), then
+`systemctl --user enable --now sysbridge`; until then `--port 8182`. (2) The
+"Router UI" link tile added during testing was left installed in
+`~/.local/state/sysbridge/apps/router-ui/` — keep or uninstall from its ⋯ menu.
 
 ## Phase 4 — per-app command permissions (idea, not scheduled)
 
