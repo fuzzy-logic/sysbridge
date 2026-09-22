@@ -21,7 +21,7 @@ chat; the push then went through).
 | 1 dashboard | done | opened from :8181: router + reviewer cards healthy, 7 presets, activity 1 s, every router GET carries `autoload=false`; confirm dialog states eviction with live sizes; cancel leaves state untouched |
 | 2 bridge core | done | `--once gpu` GTT == `mem_info_gtt_used`; all 11 probes ok; `/v1/all`, `/v1/stream`, 403-no-CORS, 204 preflight verified with curl |
 | 3 actions | done | unit tests: no file → 404, no/wrong token → 401, bad Origin → 403, confirm → 400, argv from request ignored |
-| 4 systemd | `sysbridge-http.service` + drop-in + `install.sh`; **not installed** | every probe passes under `systemd-run -p ProtectSystem=strict -p ProtectHome=read-only -p NoNewPrivileges=true -p PrivateTmp=true` |
+| 4 systemd | **installed 2026-09-22 via `./install.sh`**: `sysbridge-http` enabled, port 80, all 11 probes ok under the hardening | every probe passes under `systemd-run -p ProtectSystem=strict -p ProtectHome=read-only -p NoNewPrivileges=true -p PrivateTmp=true` |
 | 5 skill + README | done | `skills/sysbridge-client/SKILL.md`, README in the measured-facts → design → install → dev order |
 
 ### Deviations from the plan (all additive)
@@ -44,8 +44,8 @@ chat; the push then went through).
 
 ### Not done / open items for the user
 
-1. **Run `./install.sh`** if wanted (reversible with `--uninstall`; the sysctl is its
-   one sudo step). Not done by the agent because it enables a service and needs sudo.
+1. ~~Run `./install.sh`~~ — done by the user 2026-09-22; `http://localhost/` is live.
+   Reverse with `./install.sh --uninstall [--purge-sysctl]`.
 2. **Live load/unload was not exercised** — the plan says only with the user
    present. The dialog was opened and cancelled; the POST path is exercised by
    the router's own API contract only.
@@ -446,8 +446,8 @@ Two bugs found by tests on the way: `re.findall` returns `''` not `None` for
 non-matching groups (single-quoted/unquoted meta values were dropped); and a
 test-ordering dependency on the trash count.
 
-**Left for the user:** (1) `./install.sh` — one script: the port-80 sysctl (its
-only sudo), unit symlink, drop-in, enable; the daemon is `sysbridge-http`. (2) The
+**Left for the user:** (1) ~~`./install.sh`~~ done: `sysbridge-http` runs on port 80,
+verified from the service (health, all probes, launcher, dashboard). (2) The
 "Router UI" link tile added during testing was left installed in
 `~/.local/state/sysbridge/apps/router-ui/` — keep or uninstall from its ⋯ menu.
 
