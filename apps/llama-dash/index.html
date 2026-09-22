@@ -1,0 +1,498 @@
+<!--
+  llama-dash — what is my llama-server router doing right now?
+
+  One file. No build, no dependencies. Open it from file:// or serve it from
+  any localhost port (python -m http.server 8181). It talks straight to:
+
+    router    http://127.0.0.1:8080   llama-server started with no -m (router mode)
+    reviewer  http://127.0.0.1:8127   a single-model llama-server (optional)
+    bridge    http://127.0.0.1:8182   sysbridge, for GPU/RAM/disk (optional)
+
+  Both llama-servers reflect any Origin (including "null" from file://), so
+  a static page can call them directly. Endpoints live in the settings drawer
+  and persist in localStorage.
+
+  Footguns this page is built around (verified 2026-09-22, build b1-c26c2ea):
+    * GET /props?model=<unloaded> LOADS that model unless ?autoload=false.
+      Every router GET here carries autoload=false. Do not remove it.
+    * /models/sse sends nothing until a status changes; snapshot via /models.
+    * Under --models-max 1, POST /models/load evicts the resident model.
+      The confirm dialog says so, with sizes read from live state.
+    * DELETE /models removes a model from the router and breaks every client
+      that names it. This page has no delete button on purpose.
+    * gpu_busy_percent reads 100% whenever a model is merely resident on this
+      APU. /slots is the activity signal; busy% is shown with that caveat.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama-dash</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --fg: #1c1f24; --muted: #6b7280; --card: #ffffff; --line: #e3e6ea;
+    --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --info: #2563eb; --idle: #9ca3af;
+    --bar: #e5e7eb; --accent: #2563eb; --accent2: #7c3aed;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1216; --fg: #e5e7eb; --muted: #9aa3ad; --card: #171b21; --line: #262b33;
+            --bar: #262b33; --idle: #4b5563; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); }
+  header { display: flex; align-items: center; gap: 1rem; padding: .6rem 1rem; border-bottom: 1px solid var(--line);
+           position: sticky; top: 0; background: var(--bg); z-index: 2; }
+  header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+  header .stamp { color: var(--muted); font-size: .85rem; margin-left: auto; }
+  header .paused { color: var(--warn); font-weight: 600; }
+  main { padding: 1rem; display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr)); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: .6rem; padding: .8rem 1rem; min-width: 0; }
+  section.wide { grid-column: 1 / -1; }
+  section h2 { font-size: .95rem; margin: 0 0 .6rem; font-weight: 600; display: flex; align-items: center; gap: .5rem; }
+  section h2 .sub { color: var(--muted); font-weight: 400; font-size: .8rem; }
+  .cards { display: grid; gap: .7rem; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
+  .card { border: 1px solid var(--line); border-radius: .5rem; padding: .6rem .8rem; }
+  .card .name { font-weight: 600; display: flex; align-items: center; gap: .5rem; }
+  .card dl { margin: .4rem 0 0; display: grid; grid-template-columns: auto 1fr; gap: .15rem .8rem; font-size: .85rem; }
+  .card dt { color: var(--muted); } .card dd { margin: 0; overflow-wrap: anywhere; }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th, td { text-align: left; padding: .3rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+  td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .tablewrap { overflow-x: auto; }
+  .pill { display: inline-block; padding: .05rem .5rem; border-radius: 1rem; font-size: .75rem; font-weight: 600; color: #fff; background: var(--idle); }
+  .pill.loaded, .pill.ok, .pill.busy { background: var(--ok); }
+  .pill.loading, .pill.downloading, .pill.warn, .pill.stale { background: var(--warn); }
+  .pill.failed, .pill.bad { background: var(--bad); }
+  .pill.sleeping { background: var(--info); }
+  .pill.idle, .pill.unloaded { background: var(--idle); }
+  .muted { color: var(--muted); }
+  .err { color: var(--bad); font-size: .85rem; margin: .3rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .err:empty { display: none; }
+  button { font: inherit; padding: .25rem .7rem; border-radius: .4rem; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.danger { background: var(--bad); color: #fff; border-color: var(--bad); }
+  details summary { cursor: pointer; color: var(--muted); font-size: .8rem; }
+  pre { font-size: .75rem; margin: .3rem 0 0; padding: .5rem; background: var(--bg); border-radius: .4rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bar { position: relative; height: .7rem; background: var(--bar); border-radius: .35rem; overflow: hidden; margin: .15rem 0 .4rem; }
+  .bar > i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+  .bar > i.over { background: var(--accent2); opacity: .85; }
+  .kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .5rem .8rem; font-size: .85rem; }
+  .kv b { display: block; font-weight: 500; color: var(--muted); font-size: .75rem; }
+  .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  dialog { border: 1px solid var(--line); border-radius: .6rem; background: var(--card); color: var(--fg); padding: 1rem 1.2rem; max-width: min(34rem, 92vw); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog h3 { margin: 0 0 .6rem; font-size: 1rem; }
+  dialog label { display: block; margin: .5rem 0 .15rem; font-size: .85rem; color: var(--muted); }
+  dialog input { width: 100%; font: inherit; padding: .3rem .5rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--bg); color: var(--fg); }
+  dialog .actions { display: flex; gap: .5rem; justify-content: flex-end; margin-top: 1rem; }
+  .consequence { background: var(--bg); border-left: 3px solid var(--warn); padding: .5rem .8rem; border-radius: .3rem; margin: .5rem 0; font-size: .9rem; }
+  [hidden] { display: none !important; }
+</style>
+
+<header>
+  <h1>llama-dash</h1>
+  <span id="pausedFlag" class="paused" hidden>paused (tab hidden)</span>
+  <span class="stamp">last refreshed <span id="stamp">—</span></span>
+  <button id="settingsBtn" title="Endpoints and bridge token">Settings</button>
+</header>
+
+<main>
+  <section id="serversSec" class="wide">
+    <h2>Servers <span class="sub">health · build · slots · mode</span></h2>
+    <div id="servers" class="cards"></div>
+  </section>
+
+  <section id="modelsSec" class="wide">
+    <h2>Router models <span class="sub" id="modelsSub"></span></h2>
+    <div class="err" id="modelsErr"></div>
+    <div class="tablewrap"><table id="models"></table></div>
+  </section>
+
+  <section id="activitySec" class="wide">
+    <h2>Activity <span class="sub">/slots, 1 s</span></h2>
+    <div class="err" id="activityErr"></div>
+    <div id="activity" class="cards"></div>
+  </section>
+
+  <section id="systemSec" class="wide" hidden>
+    <h2>System <span class="sub">via sysbridge <span id="bridgeStamp"></span></span></h2>
+    <div class="err" id="systemErr"></div>
+    <div id="system"></div>
+  </section>
+</main>
+
+<dialog id="settingsDlg">
+  <h3>Endpoints</h3>
+  <form method="dialog" id="settingsForm">
+    <label>Router (llama-server, router mode)</label><input name="router" placeholder="http://127.0.0.1:8080">
+    <label>Reviewer (single-model llama-server, optional — blank to disable)</label><input name="reviewer" placeholder="http://127.0.0.1:8127">
+    <label>Bridge (sysbridge, optional — blank to disable)</label><input name="bridge" placeholder="http://127.0.0.1:8182">
+    <label>Bridge token (only needed for bridge actions; from <code>python -m bridge --token</code>)</label><input name="token" autocomplete="off">
+    <div class="actions">
+      <button type="button" id="settingsReset">Defaults</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="confirmDlg">
+  <h3 id="confirmTitle"></h3>
+  <div id="confirmBody"></div>
+  <div class="actions">
+    <button type="button" id="confirmNo">Cancel</button>
+    <button type="button" id="confirmYes" class="danger">Confirm</button>
+  </div>
+</dialog>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- settings
+const DEFAULTS = { router: 'http://127.0.0.1:8080', reviewer: 'http://127.0.0.1:8127', bridge: 'http://127.0.0.1:8182', token: '' };
+const LS_KEY = 'llama-dash.settings.v1';
+let S = loadSettings();
+function loadSettings() {
+  try { const s = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); return { ...DEFAULTS, ...s }; }
+  catch (e) { return { ...DEFAULTS }; }
+}
+function saveSettings(s) { S = s; try { localStorage.setItem(LS_KEY, JSON.stringify(s)); } catch (e) {} }
+const trim = u => (u || '').trim().replace(/\/+$/, '');
+
+// ---------------------------------------------------------------- helpers
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const GiB = 1024 ** 3;
+const fmtBytes = n => n == null ? '—' : n >= GiB ? (n / GiB).toFixed(1) + ' GiB' : n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(0) + ' MiB' : n + ' B';
+const fmtParams = n => n == null ? '—' : n >= 1e9 ? (n / 1e9).toFixed(1) + 'B' : (n / 1e6).toFixed(0) + 'M';
+const fmtK = n => n == null ? '—' : n >= 1024 ? (n / 1024).toFixed(0) + 'k' : String(n);
+const fmtInt = n => n == null ? '—' : Number(n).toLocaleString();
+const fmtF = x => x == null ? '—' : String(+Number(x).toPrecision(3));
+const pct = (a, b) => (b > 0 ? Math.min(100, 100 * a / b) : 0);
+
+// Every router GET carries autoload=false. /props?model=<unloaded> would otherwise load it.
+function routerURL(path, params = {}) {
+  const u = new URL(trim(S.router) + path);
+  for (const [k, v] of Object.entries(params)) if (v != null) u.searchParams.set(k, v);
+  u.searchParams.set('autoload', 'false');
+  return u.toString();
+}
+async function getJSON(url, { timeout = 4000, ...opts } = {}) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const r = await fetch(url, { ...opts, signal: ctl.signal, cache: 'no-store' });
+    const text = await r.text();
+    let body = null; try { body = text ? JSON.parse(text) : null; } catch (e) { body = { raw: text }; }
+    if (!r.ok) { const msg = body?.error?.message || body?.error || text || r.statusText; throw new Error(`HTTP ${r.status}: ${msg}`); }
+    return body;
+  } finally { clearTimeout(t); }
+}
+const errText = e => e?.name === 'AbortError' ? 'timeout' : (e?.message || String(e));
+
+// ---------------------------------------------------------------- state
+const state = {
+  servers: {},          // key -> { ok, health, props, mode, err }
+  models: [],           // router /models data[]
+  modelsErr: '',
+  slots: {},            // key -> { rows, err }
+  bridge: null,         // last /v1/all body, or null when unreachable
+  bridgeErr: '',
+  busy: false,          // a load/unload POST is in flight
+};
+const openDetails = new Set();
+let paused = false;
+
+// ---------------------------------------------------------------- servers panel
+function serverList() {
+  const l = [{ key: 'router', label: 'Router', url: trim(S.router) }];
+  if (trim(S.reviewer)) l.push({ key: 'reviewer', label: 'Reviewer', url: trim(S.reviewer) });
+  return l;
+}
+// Router shape: {data:[{status:{value}}]}. Single-model: {models:[ollama-stub], data:[…]} with no status.
+function inferMode(models) {
+  const data = Array.isArray(models?.data) ? models.data : [];
+  if (data.some(m => m && m.status && typeof m.status.value === 'string')) return 'router';
+  if (Array.isArray(models?.models) || data.length) return 'single';
+  return 'unknown';
+}
+async function pollServers() {
+  for (const sv of serverList()) {
+    const cur = state.servers[sv.key] || {};
+    try {
+      const health = await getJSON(sv.url + '/health?autoload=false');
+      let models = null, props = null, mode = cur.mode || 'unknown';
+      try { models = await getJSON(sv.url + '/models?autoload=false'); mode = inferMode(models); } catch (e) { /* keep last mode */ }
+      if (sv.key === 'router') {
+        state.models = Array.isArray(models?.data) ? models.data : state.models; state.modelsErr = '';
+        const loaded = state.models.find(m => m.status?.value === 'loaded');
+        if (loaded) { try { props = await getJSON(routerURL('/props', { model: loaded.id })); } catch (e) {} }
+      } else {
+        try { props = await getJSON(sv.url + '/props'); } catch (e) {}
+      }
+      state.servers[sv.key] = { ok: health?.status === 'ok', health, props, mode, models, err: '' };
+    } catch (e) {
+      state.servers[sv.key] = { ...cur, ok: false, err: errText(e) };
+      if (sv.key === 'router') state.modelsErr = `router unreachable at ${sv.url}: ${errText(e)}`;
+    }
+  }
+  renderServers(); renderModels();
+}
+function renderServers() {
+  $('servers').innerHTML = serverList().map(sv => {
+    const s = state.servers[sv.key] || {}; const p = s.props || {};
+    const pill = s.ok ? '<span class="pill ok">healthy</span>' : `<span class="pill bad">${s.err ? 'down' : '…'}</span>`;
+    const single = s.models?.data?.[0];
+    const rows = [
+      ['url', esc(sv.url)],
+      ['mode', s.mode === 'router' ? 'router (multi-model)' : s.mode === 'single' ? 'single model' : '—'],
+      ['build', esc(p.build_info || '—')],
+      ['slots', p.total_slots ?? '—'],
+    ];
+    if (sv.key === 'router') {
+      const n = state.models.length, loaded = state.models.filter(m => m.status?.value === 'loaded').map(m => m.id);
+      rows.push(['presets', n ? `${n} (${loaded.length ? 'loaded: ' + esc(loaded.join(', ')) : 'none loaded'})` : '—']);
+    } else if (single) {
+      rows.push(['model', esc(p.model_alias || single.id || '—')], ['ctx', fmtK(single.meta?.n_ctx)], ['size', fmtBytes(single.meta?.size)]);
+    }
+    if (p.is_sleeping) rows.push(['state', '<span class="pill sleeping">sleeping</span>']);
+    if (s.err) rows.push(['error', `<span class="err">${esc(s.err)}</span>`]);
+    return `<div class="card"><div class="name">${esc(sv.label)} ${pill}</div><dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></div>`;
+  }).join('');
+}
+
+// ---------------------------------------------------------------- models panel
+function parsePreset(txt) {
+  const o = {}; for (const line of String(txt || '').split('\n')) { const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*?)\s*$/); if (m) o[m[1]] = m[2]; } return o;
+}
+function bridgeModelInfo(id) {
+  const r = state.bridge?.results?.router_models; if (!r?.ok) return null;
+  return (r.data?.models || []).find(m => m.id === id) || null;
+}
+function anyLoading() { return state.models.some(m => ['loading', 'downloading'].includes(m.status?.value)); }
+let modelsSig = '';
+function renderModels() {
+  const ms = state.models;
+  $('modelsErr').textContent = state.modelsErr;
+  $('modelsSub').textContent = ms.length ? `${ms.length} presets · live via /models/sse, poll 5 s` : '';
+  if (!ms.length) { $('models').innerHTML = ''; modelsSig = ''; return; }
+  const disabled = state.busy || anyLoading();
+  const hasBridge = !!state.bridge;
+  // Only touch the DOM when something visible changed: keeps expanders, selections and focus stable.
+  const sig = JSON.stringify([disabled, hasBridge, ms.map(m => [m.id, m.status?.value, m.meta?.size, bridgeModelInfo(m.id)?.size_bytes])]);
+  if (sig === modelsSig) { if (!hasBridge && ms.some(m => !m.meta)) $('modelsSub').textContent += ' · sizes of unloaded models need the bridge'; return; }
+  modelsSig = sig;
+  const head = `<tr><th>model</th><th>status</th><th class="num">size</th><th class="num">params</th><th class="num">ctx</th><th>modalities</th><th>controls</th></tr>`;
+  const rows = ms.map(m => {
+    const st = m.status?.value || 'unknown'; const meta = m.meta; const preset = parsePreset(m.status?.preset);
+    const bi = bridgeModelInfo(m.id);
+    const size = meta ? fmtBytes(meta.size) : bi?.size_bytes != null ? `<span class="muted" title="file size via bridge">${fmtBytes(bi.size_bytes)}</span>` : '<span class="muted">—</span>';
+    const params = meta ? fmtParams(meta.n_params) : '<span class="muted">—</span>';
+    const ctx = meta ? fmtK(meta.n_ctx) : preset['ctx-size'] ? `<span class="muted" title="from preset">${fmtK(+preset['ctx-size'])}</span>` : '—';
+    const mods = (m.architecture?.input_modalities || []).join(', ') || '—';
+    const isOpen = openDetails.has(m.id) ? ' open' : '';
+    const ctl = st === 'loaded'
+      ? `<button data-act="unload" data-id="${esc(m.id)}" ${disabled ? 'disabled' : ''}>Unload</button>`
+      : ['unloaded', 'failed', 'sleeping'].includes(st)
+        ? `<button data-act="load" data-id="${esc(m.id)}" ${disabled ? 'disabled' : ''}>Load</button>`
+        : '<span class="muted">…</span>';
+    const details = `<details data-id="${esc(m.id)}"${isOpen}><summary>details</summary>` +
+      (bi?.model_path ? `<div class="muted" style="font-size:.75rem;margin-top:.3rem">file: ${esc(bi.model_path)}${bi.mmproj_path ? ' + mmproj ' + fmtBytes(bi.mmproj_size_bytes) : ''}</div>` : '') +
+      `<pre>${esc(m.status?.preset || '(no preset)')}</pre>` +
+      (m.status?.args?.length ? `<pre>${esc(m.status.args.join(' \\\n  '))}</pre>` : '') + `</details>`;
+    return `<tr><td><b>${esc(m.id)}</b>${details}</td><td><span class="pill ${esc(st)}">${esc(st)}</span></td>` +
+      `<td class="num">${size}</td><td class="num">${params}</td><td class="num">${ctx}</td><td>${esc(mods)}</td><td>${ctl}</td></tr>`;
+  }).join('');
+  $('models').innerHTML = head + rows;
+  if (!hasBridge && ms.some(m => !m.meta)) $('modelsSub').textContent += ' · sizes of unloaded models need the bridge';
+}
+$('models').addEventListener('toggle', e => { const d = e.target; if (d.tagName === 'DETAILS') { d.open ? openDetails.add(d.dataset.id) : openDetails.delete(d.dataset.id); } }, true);
+$('models').addEventListener('click', e => { const b = e.target.closest('button[data-act]'); if (b) confirmAction(b.dataset.act, b.dataset.id); });
+
+// SSE: change signal only. Refresh /models on any event; fall back to the 5 s poll.
+let sse = null;
+function connectSSE() {
+  if (sse) { sse.close(); sse = null; }
+  if (!trim(S.router) || !('EventSource' in window)) return;
+  try {
+    sse = new EventSource(routerURL('/models/sse'));
+    const bump = () => { if (!paused) pollServers(); };
+    sse.onmessage = bump;
+    for (const ev of ['model_status', 'download_progress', 'model_remove', 'models_reload']) sse.addEventListener(ev, bump);
+    sse.onerror = () => { /* EventSource retries by itself; the poll covers the gap */ };
+  } catch (e) { sse = null; }
+}
+
+// ---------------------------------------------------------------- controls
+async function confirmAction(act, id) {
+  const m = state.models.find(x => x.id === id); if (!m) return;
+  const loaded = state.models.filter(x => x.status?.value === 'loaded' && x.id !== id);
+  const bi = bridgeModelInfo(id);
+  let title, body;
+  if (act === 'load') {
+    title = `Load ${id}?`;
+    const fileSz = bi?.size_bytes != null ? fmtBytes(bi.size_bytes + (bi.mmproj_size_bytes || 0)) : 'unknown (bridge not reachable)';
+    if (loaded.length) {
+      const y = loaded[0];
+      body = `<div class="consequence">Loading <b>${esc(id)}</b> will <b>evict ${esc(y.id)}</b> — the router keeps one model resident (models-max 1). ` +
+        `${esc(y.id)}'s ${fmtBytes(y.meta?.size)} in GPU memory will be freed and ${esc(id)}'s file is ${fileSz}. ` +
+        `Every client currently talking to ${esc(y.id)} will wait for a cold reload later (30–120 s).</div>`;
+    } else {
+      body = `<div class="consequence">Nothing is resident. ${esc(id)}'s file is ${fileSz}; loading takes 30–120 s and clients calling it will queue until it is ready.</div>`;
+    }
+  } else {
+    title = `Unload ${id}?`;
+    body = `<div class="consequence">Unloading <b>${esc(id)}</b> frees its ${fmtBytes(m.meta?.size)} of GPU memory. ` +
+      `Any client that names it will trigger a cold reload on its next request (30–120 s). The preset stays in the router; nothing is removed.</div>`;
+  }
+  $('confirmTitle').textContent = title; $('confirmBody').innerHTML = body;
+  $('confirmYes').textContent = act === 'load' ? 'Load' : 'Unload';
+  const dlg = $('confirmDlg');
+  const ok = await new Promise(res => {
+    const yes = () => { cleanup(); res(true); }, no = () => { cleanup(); res(false); };
+    const cleanup = () => { $('confirmYes').removeEventListener('click', yes); $('confirmNo').removeEventListener('click', no); dlg.removeEventListener('close', no); dlg.close(); };
+    $('confirmYes').addEventListener('click', yes); $('confirmNo').addEventListener('click', no); dlg.addEventListener('close', no);
+    dlg.showModal();
+  });
+  if (!ok) return;
+  state.busy = true; renderModels();
+  try {
+    const r = await getJSON(routerURL(`/models/${act}`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: id }), timeout: 15000 });
+    if (r?.success !== true) throw new Error('server did not report success: ' + JSON.stringify(r));
+    state.modelsErr = '';
+  } catch (e) {
+    state.modelsErr = `${act} ${id} failed — ${errText(e)}`;
+  } finally { state.busy = false; await pollServers(); }
+}
+
+// ---------------------------------------------------------------- activity panel
+async function pollSlots() {
+  const targets = [];
+  for (const m of state.models) if (m.status?.value === 'loaded') targets.push({ key: 'router:' + m.id, label: m.id, url: routerURL('/slots', { model: m.id }) });
+  if (trim(S.reviewer) && state.servers.reviewer?.ok) targets.push({ key: 'reviewer', label: state.servers.reviewer?.props?.model_alias || 'reviewer', url: trim(S.reviewer) + '/slots' });
+  const got = await Promise.all(targets.map(async t => {
+    try { const rows = await getJSON(t.url, { timeout: 2500 }); return { label: t.label, rows: Array.isArray(rows) ? rows : [], err: '' }; }
+    catch (e) { return { label: t.label, rows: [], err: errText(e) }; }
+  }));
+  const next = {}; targets.forEach((t, i) => { next[t.key] = got[i]; }); // router models first, then reviewer
+  state.slots = next; renderActivity();
+}
+function renderActivity() {
+  const keys = Object.keys(state.slots);
+  if (!keys.length) { $('activity').innerHTML = '<div class="muted">no loaded model to watch</div>'; $('activityErr').textContent = ''; return; }
+  $('activityErr').textContent = '';
+  $('activity').innerHTML = keys.map(k => {
+    const s = state.slots[k];
+    if (s.err) return `<div class="card"><div class="name">${esc(s.label)} <span class="pill bad">error</span></div><div class="err">${esc(s.err)}</div></div>`;
+    const busy = s.rows.some(r => r.is_processing);
+    const slots = s.rows.map(r => {
+      const nt = Array.isArray(r.next_token) ? r.next_token[0] : r.next_token; const p = r.params || {};
+      const rows = [
+        ['state', r.is_processing ? '<span class="pill busy">generating</span>' : '<span class="pill idle">idle</span>'],
+        ['task', r.id_task ?? '—'],
+        ['prompt tokens', `${fmtInt(r.n_prompt_tokens)}${r.n_prompt_tokens_cache ? ` <span class="muted">(${fmtInt(r.n_prompt_tokens_cache)} from cache)</span>` : ''}`],
+        ['decoded', fmtInt(nt?.n_decoded)],
+        ['ctx', fmtK(r.n_ctx)],
+      ];
+      if (p.temperature != null) rows.push(['sampling', `T ${fmtF(p.temperature)} · top_k ${p.top_k} · top_p ${fmtF(p.top_p)} · min_p ${fmtF(p.min_p)} · max ${fmtInt(p.max_tokens)}`]);
+      if (p['speculative.types'] && p['speculative.types'] !== 'none') rows.push(['speculative', esc(p['speculative.types'])]);
+      if (p.reasoning_format) rows.push(['reasoning', esc(p.reasoning_format)]);
+      return `<dl><dt>slot</dt><dd>${r.id}</dd>${rows.map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('')}</dl>`;
+    }).join('');
+    return `<div class="card"><div class="name">${esc(s.label)} ${busy ? '<span class="pill busy">busy</span>' : '<span class="pill idle">idle</span>'} <span class="muted" style="font-weight:400;font-size:.8rem">${s.rows.length} slot${s.rows.length === 1 ? '' : 's'}</span></div>${slots}</div>`;
+  }).join('');
+}
+
+// ---------------------------------------------------------------- system panel (bridge)
+const BRIDGE_PROBES = 'gpu,ram,cpu,disk,battery,rocm_pids,router_models';
+async function pollBridge() {
+  const b = trim(S.bridge);
+  if (!b) { state.bridge = null; renderSystem(); return; }
+  try { state.bridge = await getJSON(`${b}/v1/all?names=${BRIDGE_PROBES}`, { timeout: 3000 }); state.bridgeErr = ''; }
+  catch (e) { state.bridge = null; state.bridgeErr = errText(e); }
+  renderSystem();
+  if (state.bridge) renderModels(); // unloaded-model sizes come from router_models
+}
+function bar(used, total, over) {
+  const w = pct(used, total).toFixed(1);
+  const o = over != null ? `<i class="over" style="width:${pct(over, total).toFixed(1)}%"></i>` : '';
+  return `<div class="bar">${o}<i style="width:${w}%"></i></div>`;
+}
+function envelopeBadge(env) { return env?.stale ? ' <span class="pill stale" title="cached value; last refresh failed">stale</span>' : ''; }
+function renderSystem() {
+  const sec = $('systemSec');
+  if (!state.bridge) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const R = state.bridge.results || {};
+  $('bridgeStamp').textContent = '· ' + new Date((state.bridge.ts || 0) * 1000).toLocaleTimeString();
+  const errs = Object.values(R).filter(e => e && !e.ok && e.error).map(e => `${e.name}: ${e.error.message}`);
+  $('systemErr').textContent = errs.join('\n');
+  const out = [];
+  const gpu = R.gpu?.ok ? R.gpu.data : null, ram = R.ram?.ok ? R.ram.data : null, cpu = R.cpu?.ok ? R.cpu.data : null;
+  if (gpu || ram) {
+    let h = `<div class="kv">`;
+    if (gpu?.gtt) h += `<div><b>GTT (GPU-accessible system RAM)${envelopeBadge(R.gpu)}</b>${fmtBytes(gpu.gtt.used)} / ${fmtBytes(gpu.gtt.total)}${bar(gpu.gtt.used, gpu.gtt.total)}</div>`;
+    if (gpu?.vram) h += `<div><b>VRAM (carve-out)</b>${fmtBytes(gpu.vram.used)} / ${fmtBytes(gpu.vram.total)}${bar(gpu.vram.used, gpu.vram.total)}</div>`;
+    if (ram) {
+      const u = ram.unified || {};
+      h += `<div><b>RAM${envelopeBadge(R.ram)} <span title="the purple share is GTT — GPU memory carved from the same RAM">(GTT overlaid)</span></b>${fmtBytes(ram.used)} used / ${fmtBytes(ram.total)} · ${fmtBytes(ram.available)} available${bar(ram.used, ram.total, u.gtt_used)}</div>`;
+      if (ram.swap?.total) h += `<div><b>swap</b>${fmtBytes(ram.swap.total - ram.swap.free)} / ${fmtBytes(ram.swap.total)}${bar(ram.swap.total - ram.swap.free, ram.swap.total)}</div>`;
+    }
+    h += `</div><div class="kv" style="margin-top:.5rem">`;
+    if (gpu) {
+      h += `<div><b>GPU busy <span title="on this APU busy% reads 100 whenever a model is resident; use Activity for real work">ⓘ</span></b>${gpu.busy_percent ?? '—'} %</div>`;
+      h += `<div><b>GPU temp</b>${gpu.temp_c != null ? gpu.temp_c.toFixed(0) + ' °C' : '—'}</div>`;
+      h += `<div><b>GPU power</b>${gpu.power_w != null ? gpu.power_w.toFixed(1) + ' W' : '—'}</div>`;
+      h += `<div><b>GPU clock</b>${gpu.sclk_mhz != null ? gpu.sclk_mhz + ' MHz' : '—'}</div>`;
+    }
+    if (cpu) {
+      h += `<div><b>CPU busy${envelopeBadge(R.cpu)}</b>${cpu.busy_percent != null ? cpu.busy_percent.toFixed(0) + ' %' : '—'} <span class="muted">· load ${(cpu.load || []).map(x => x.toFixed(2)).join(' ')}</span></div>`;
+      h += `<div><b>CPU temp</b>${cpu.temp_c != null ? cpu.temp_c.toFixed(0) + ' °C' : '—'}</div>`;
+    }
+    const bat = R.battery?.ok ? R.battery.data : null;
+    if (bat?.present) h += `<div><b>battery</b>${bat.capacity_percent ?? '—'} % · ${esc(bat.status || '')}${bat.ac_online ? ' · AC' : ''}${bat.power_w ? ' · ' + bat.power_w.toFixed(1) + ' W' : ''}</div>`;
+    h += `</div>`;
+    out.push(h);
+  }
+  const rp = R.rocm_pids?.ok ? R.rocm_pids.data : null;
+  if (rp?.processes?.length) {
+    out.push(`<h2 style="margin-top:1rem">GPU-holding processes <span class="sub">rocm-smi --showpids${envelopeBadge(R.rocm_pids)}</span></h2><div class="tablewrap"><table><tr><th>pid</th><th>process</th><th class="num">compute memory</th><th>gpu</th></tr>` +
+      rp.processes.slice().sort((a, b) => (b.vram_used || 0) - (a.vram_used || 0)).map(p => `<tr><td>${p.pid}</td><td>${esc(p.name)}</td><td class="num">${fmtBytes(p.vram_used)}</td><td>${esc(p.gpus ?? '')}</td></tr>`).join('') + '</table></div>');
+  }
+  const dk = R.disk?.ok ? R.disk.data : null;
+  if (dk?.filesystems?.length) {
+    out.push(`<h2 style="margin-top:1rem">Disk${envelopeBadge(R.disk)}</h2><div class="tablewrap"><table><tr><th>mount</th><th>fs</th><th class="num">used</th><th class="num">avail</th><th style="width:30%">&nbsp;</th></tr>` +
+      dk.filesystems.map(f => `<tr><td>${esc(f.target)} <span class="muted">${esc(f.source)}</span></td><td>${esc(f.fstype)}</td><td class="num">${fmtBytes(f.used)}</td><td class="num">${fmtBytes(f.avail)}</td><td>${bar(f.used, f.size)}</td></tr>`).join('') + '</table></div>');
+  }
+  $('system').innerHTML = out.join('') || '<div class="muted">bridge answered but no probe data</div>';
+}
+
+// ---------------------------------------------------------------- scheduling
+const timers = {};
+function every(name, ms, fn) { clearInterval(timers[name]); timers[name] = setInterval(() => { if (!paused) fn().catch(() => {}).finally(stamp); }, ms); }
+function stamp() { $('stamp').textContent = new Date().toLocaleTimeString(); }
+async function refreshAll() { await pollServers(); await Promise.all([pollSlots(), pollBridge()]); stamp(); }
+function start() {
+  connectSSE();
+  every('servers', 5000, pollServers);
+  every('slots', 1000, pollSlots);
+  every('bridge', 2000, pollBridge);
+  refreshAll();
+}
+document.addEventListener('visibilitychange', () => {
+  paused = document.hidden; $('pausedFlag').hidden = !paused;
+  if (paused) { if (sse) { sse.close(); sse = null; } } else { connectSSE(); refreshAll(); }
+});
+
+// ---------------------------------------------------------------- settings UI
+const form = $('settingsForm');
+$('settingsBtn').addEventListener('click', () => { for (const k of Object.keys(DEFAULTS)) form.elements[k].value = S[k] || ''; $('settingsDlg').showModal(); });
+$('settingsReset').addEventListener('click', () => { for (const k of Object.keys(DEFAULTS)) form.elements[k].value = DEFAULTS[k]; });
+form.addEventListener('submit', () => {
+  const s = {}; for (const k of Object.keys(DEFAULTS)) s[k] = form.elements[k].value.trim();
+  saveSettings(s); state.servers = {}; state.models = []; state.slots = {}; state.bridge = null; start();
+});
+
+start();
+</script>
