@@ -131,10 +131,10 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return
 function port(){var m=L.match(/:(\d+)\/$/);return m?':'+m[1]:''}
 function appUrl(a){return a.kind==='link'?a.url:'http://'+a.slug+'.localhost'+port()+'/'}
 function build(apps){var me=location.hostname.replace(/\.localhost$/,'');var cur=(location.pathname.match(/^\/apps\/([a-z0-9-]+)/)||[])[1]||me;
-var html='<div class="t">sysbridge</div><a href="'+esc(L)+'"><span class="i">\u2302</span>All apps</a><hr>';
+var html='<div class="t">sysbridge</div><a href="'+esc(L)+'"><span class="i">\ud83c\udfe0</span>Home</a><hr>';
 apps.forEach(function(a){html+='<a href="'+esc(appUrl(a))+'"'+(a.kind==='link'?' target="_blank" rel="noopener"':'')+' class="'+(a.slug===cur?'cur':'')+'"><span class="i">'+esc(a.icon)+'</span>'+esc(a.title)+(a.kind==='link'?' \u2197':'')+'</a>'});
 html+='<hr><div class="t">'+(tok()?'token present':'no token \u2014 the bridge runs with --no-token-inject; paste it in the launcher')+'</div>';p.innerHTML=html;loaded=true}
-function load(){if(loaded)return;p.innerHTML='<div class="t">loading\u2026</div>';fetch('/v1/apps',{cache:'no-store'}).then(function(x){return x.json()}).then(build).catch(function(){p.innerHTML='<a href="'+esc(L)+'"><span class="i">\u2302</span>All apps</a>'})}
+function load(){if(loaded)return;p.innerHTML='<div class="t">loading\u2026</div>';fetch('/v1/apps',{cache:'no-store'}).then(function(x){return x.json()}).then(build).catch(function(){p.innerHTML='<a href="'+esc(L)+'"><span class="i">\ud83c\udfe0</span>Home</a>'})}
 w.addEventListener('mouseenter',load);w.addEventListener('focusin',load);
 b.addEventListener('click',function(){load();w.classList.toggle('pin')});
 document.addEventListener('keydown',function(e){if(e.key==='Escape')w.classList.remove('pin')});
