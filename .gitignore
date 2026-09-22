@@ -1,0 +1,18 @@
+# bytecode
+__pycache__/
+*.pyc
+
+# anything ending .local.json is a machine-specific override — never public
+*.local.json
+
+# the live allowlist names real commands and real unit names on one machine;
+# only the .example ships
+config/actions.json
+
+# systemd drop-in with machine paths lives in ~/.config, not here
+systemd/sysbridge.service.d/local.conf
+
+# editor / OS noise
+.venv/
+*.swp
+.DS_Store
