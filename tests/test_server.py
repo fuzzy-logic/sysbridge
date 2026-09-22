@@ -27,7 +27,8 @@ class ServerFixture:
         cfg = Config(bind="127.0.0.1", port=0, extra_origins=["https://allowed.example"],
                      actions_file=self.actions_path, token_file=self.token_file,
                      sensitive_token_file=os.path.join(self.tmp.name, "rt", "token-sensitive"),
-                     apps_root=self.apps_root, builtins={"dash": self.builtin_dir})
+                     apps_root=self.apps_root, builtins={"dash": self.builtin_dir},
+                     fs_roots=[self.tmp.name])
         self.srv = Bridge(cfg)
         self.port = self.srv.server_address[1]
         self.thread = threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
@@ -287,6 +288,45 @@ class PerAppOriginTests(unittest.TestCase):
         self.assertEqual(st, 401)                                          # the sensitive token is not a super-token
 
 
+class FsApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.fx = ServerFixture(actions_json=None)
+        cls.S = {"X-Bridge-Sensitive-Token": cls.fx.srv.sensitive_token, "Origin": "http://web-file.localhost"}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.close()
+
+    def test_needs_sensitive_token_not_the_ordinary_one(self):
+        st, _, _ = self.fx.request("GET", "/v1/fs/roots", {"Origin": "null"})
+        self.assertEqual(st, 401)
+        st, _, _ = self.fx.request("GET", "/v1/fs/roots", {"X-Bridge-Token": self.fx.srv.token})
+        self.assertEqual(st, 401)
+        st, h, _ = self.fx.request("GET", "/v1/fs/roots", {**self.S, "Origin": "https://evil.example"})
+        self.assertEqual(st, 403)
+        self.assertNotIn("access-control-allow-origin", h)
+
+    def test_roots_ls_read_download(self):
+        st, _, b = self.fx.request("GET", "/v1/fs/roots", self.S)
+        self.assertEqual(st, 200)
+        root = b["roots"][0]["path"]
+        st, _, b = self.fx.request("GET", "/v1/fs/ls?path=" + root, self.S)
+        self.assertEqual(st, 200)
+        self.assertIn("rt", [e["name"] for e in b["entries"]])
+        st, _, b = self.fx.request("GET", "/v1/fs/ls?path=/etc", self.S)
+        self.assertEqual(st, 403)
+        st, _, b = self.fx.request("GET", "/v1/fs/read?path=" + os.path.join(root, "actions.json"), self.S)
+        self.assertIn(st, (200, 404))
+        st, h, data = self.fx.raw("GET", "/v1/fs/download?path=" + os.path.join(root, "rt", "token"), self.S)
+        self.assertEqual(st, 200)
+        self.assertEqual(h["content-type"], "application/octet-stream")
+        self.assertIn("attachment", h["content-disposition"])
+        self.assertEqual(int(h["content-length"]), len(data))
+        st, _, _ = self.fx.request("GET", "/v1/fs/nope?path=/", self.S)
+        self.assertEqual(st, 404)
+
+
 class LlamaApiTests(unittest.TestCase):
     """Gating only — the upstream logic is covered in test_llama with a fake server."""
     @classmethod
@@ -317,6 +357,16 @@ class LlamaApiTests(unittest.TestCase):
         self.assertEqual(st, 404)
         st, _, b = self.fx.request("POST", "/v1/llama/router/delete", self.H, b'{"model":"x","confirm":true}')
         self.assertEqual(st, 404)
+
+    def test_chat_gating(self):
+        # no token needed, but the body is validated before anything is contacted, and bad servers 404
+        st, _, b = self.fx.request("POST", "/v1/llama/router/chat", {"Origin": "null", "Content-Type": "application/json"}, b'{"model":"x"}')
+        self.assertEqual(st, 400)
+        st, _, b = self.fx.request("POST", "/v1/llama/nosuch/chat", {"Origin": "null", "Content-Type": "application/json"}, b'{"model":"x","messages":[{"role":"user","content":"hi"}]}')
+        self.assertEqual(st, 404)
+        st, h, _ = self.fx.request("POST", "/v1/llama/router/chat", {"Origin": "https://evil.example", "Content-Type": "application/json"}, b'{"model":"x","messages":[{"role":"user","content":"hi"}]}')
+        self.assertEqual(st, 403)
+        self.assertNotIn("access-control-allow-origin", h)
 
 
 class AppsApiTests(unittest.TestCase):

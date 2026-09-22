@@ -53,6 +53,16 @@ class Fake(BaseHTTPRequestHandler):
         Fake.seen.append(("POST", self.path, body))
         if self.path in ("/models/load", "/models/unload"):
             return self._json(200, {"success": True})
+        if self.path == "/v1/chat/completions":
+            if body.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for tok in ["Hel", "lo"]:
+                    self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {"content": tok}}]}) + "\n\n").encode())
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
+            return self._json(200, {"choices": [{"message": {"role": "assistant", "content": "Hello"}}]})
         self._json(404, {"error": {"message": "nope"}})
 
 
@@ -146,6 +156,36 @@ class LlamaTests(unittest.TestCase):
         r = llama.load_unload("router", "load", "small")
         self.assertTrue(r["ok"])
         self.assertEqual([s for s in Fake.seen if s[0] == "POST"], [("POST", "/models/load", {"model": "small"})])
+
+
+class ChatTests(LlamaTests):
+    def test_payload_whitelist(self):
+        p = llama.chat_payload({"model": "big", "messages": [{"role": "user", "content": "hi", "extra": 1}], "temperature": 0.2,
+                                "max_tokens": 10, "n_probs": 5, "grammar": "root ::= x", "stream": False, "stop": ["\n"]})
+        self.assertEqual(p, {"model": "big", "messages": [{"role": "user", "content": "hi"}], "stream": False, "temperature": 0.2, "max_tokens": 10, "stop": ["\n"]})
+        for bad in [{}, {"model": "big"}, {"model": "big", "messages": []}, {"model": "big", "messages": [{"role": "tool", "content": "x"}]},
+                    {"model": "big", "messages": [{"role": "user", "content": ["parts"]}]}, "nope"]:
+            with self.assertRaises(llama.LlamaError):
+                llama.chat_payload(bad)
+
+    def test_chat_only_loaded_models(self):
+        with self.assertRaises(llama.LlamaError) as cm:
+            llama.chat_open("router", llama.chat_payload({"model": "small", "messages": [{"role": "user", "content": "hi"}]}))
+        self.assertEqual(cm.exception.status, 409)
+        self.assertFalse([s for s in Fake.seen if s[0] == "POST"])
+        status, ctype, resp = llama.chat_open("router", llama.chat_payload({"model": "big", "messages": [{"role": "user", "content": "hi"}]}))
+        self.assertEqual(status, 200)
+        self.assertTrue(ctype.startswith("text/event-stream"))
+        body = resp.read().decode()
+        resp.close()
+        self.assertIn("Hel", body)
+        self.assertIn("[DONE]", body)
+        sent = [s for s in Fake.seen if s[0] == "POST"][-1][2]
+        self.assertEqual(sent["model"], "big")
+        self.assertTrue(sent["stream"])
+        with self.assertRaises(llama.LlamaError) as cm:
+            llama.chat_open("dead", llama.chat_payload({"model": "big", "messages": [{"role": "user", "content": "hi"}]}))
+        self.assertEqual(cm.exception.status, 502)
 
 
 if __name__ == "__main__":

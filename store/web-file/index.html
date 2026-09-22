@@ -1,0 +1,144 @@
+<!--
+  Web-File — a read-only file browser for the allowed roots (your home by default).
+  A sysbridge store app: one file, talks only to its own origin.
+    GET /v1/fs/roots | ls?path= | read?path= | download?path=      all need X-Bridge-Sensitive-Token
+  The sensitive token is typed each session and kept in page memory only — never
+  in localStorage, never in a URL. Roots and hidden-file policy: ~/.config/sysbridge/fs.json.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web-File</title>
+<meta name="description" content="Browse and preview files under the allowed roots (your home by default). Read-only; needs the sensitive token each session.">
+<meta name="app-icon" content="📁">
+<meta name="app-version" content="1.0">
+<meta name="app-author" content="sysbridge">
+<style>
+  :root { color-scheme: light dark; --bg:#f6f7f9; --fg:#1c1f24; --muted:#6b7280; --card:#fff; --line:#e3e6ea; --accent:#2563eb; --bad:#dc2626; --warn:#d97706;
+          font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 14px; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --fg:#e5e7eb; --muted:#9aa3ad; --card:#171b21; --line:#262b33; } }
+  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--fg); height:100vh; display:grid; grid-template-rows:auto 1fr; }
+  header { display:flex; align-items:center; gap:.6rem; padding:.5rem .9rem; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:1rem; margin:0; font-weight:600; } .crumbs { display:flex; gap:.2rem; align-items:center; flex-wrap:wrap; font-family:ui-monospace,monospace; font-size:.85rem; }
+  .crumbs a { color:var(--accent); text-decoration:none; cursor:pointer; } .crumbs span { color:var(--muted); } .right { margin-left:auto; display:flex; gap:.5rem; align-items:center; }
+  button, input, select { font:inherit; padding:.25rem .55rem; border:1px solid var(--line); border-radius:.45rem; background:var(--card); color:var(--fg); } button { cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); } .muted { color:var(--muted); }
+  main { display:grid; grid-template-columns: minmax(20rem, 1fr) minmax(0, 1.2fr); min-height:0; }
+  .list { overflow:auto; border-right:1px solid var(--line); } table { width:100%; border-collapse:collapse; font-size:.85rem; }
+  th, td { padding:.25rem .6rem; text-align:left; white-space:nowrap; border-bottom:1px solid var(--line); } th { color:var(--muted); font-weight:600; position:sticky; top:0; background:var(--bg); cursor:pointer; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; } tr.row { cursor:pointer; } tr.row:hover { background:var(--card); } tr.on { background:var(--card); }
+  td.name { max-width:28rem; overflow:hidden; text-overflow:ellipsis; } .i { display:inline-block; width:1.4rem; }
+  .view { overflow:auto; padding:.8rem 1rem; min-width:0; } .view h2 { font-size:.95rem; margin:0 0 .4rem; overflow-wrap:anywhere; }
+  .view pre { background:var(--card); border:1px solid var(--line); border-radius:.5rem; padding:.7rem; font-size:.8rem; white-space:pre-wrap; overflow-wrap:anywhere; max-height:calc(100vh - 12rem); overflow:auto; }
+  .view img { max-width:100%; border-radius:.5rem; border:1px solid var(--line); } .meta { color:var(--muted); font-size:.8rem; margin-bottom:.6rem; display:flex; gap:.8rem; flex-wrap:wrap; align-items:center; }
+  .err { color:var(--bad); white-space:pre-wrap; padding:.4rem .9rem; } .err:empty { display:none; }
+  dialog { border:1px solid var(--line); border-radius:.8rem; background:var(--card); color:var(--fg); padding:1.1rem 1.3rem; width:min(30rem,92vw); } dialog::backdrop { background:rgba(0,0,0,.5); }
+  dialog h3 { margin:0 0 .5rem; font-size:1rem; } dialog input { width:100%; margin:.5rem 0; } dialog .row { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.6rem; } code { font-size:.85em; }
+  @media (max-width: 52rem) { main { grid-template-columns: 1fr; } .view { display:none; } .view.show { display:block; } .list.hide { display:none; } }
+</style>
+<header>
+  <h1>Web-File</h1>
+  <div class="crumbs" id="crumbs"></div>
+  <div class="right">
+    <label class="muted"><input type="checkbox" id="hidden"> hidden files</label>
+    <select id="root" title="root"></select>
+    <button id="lock" title="Forget the sensitive token">🔒</button>
+  </div>
+</header>
+<div class="err" id="err"></div>
+<main>
+  <div class="list" id="list"></div>
+  <div class="view" id="view"><div class="muted">Select a file to preview it. Text shows inline; images render; anything else offers a download.</div></div>
+</main>
+<dialog id="tokDlg">
+  <h3>Sensitive token</h3>
+  <div class="muted">Browsing files needs the <b>sensitive</b> token, not the ordinary bridge token. It is kept only in this page's memory — reload and you type it again. Get it with <code>python -m bridge --token</code>.</div>
+  <input id="tokIn" type="password" autocomplete="off" placeholder="token-sensitive">
+  <div class="row"><button id="tokNo">Cancel</button><button id="tokOk" class="primary">Unlock</button></div>
+</dialog>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtB = n => n == null ? '' : n >= 1073741824 ? (n/1073741824).toFixed(1)+' GiB' : n >= 1048576 ? (n/1048576).toFixed(1)+' MiB' : n >= 1024 ? (n/1024).toFixed(0)+' KiB' : n+' B';
+const fmtT = t => new Date(t*1000).toLocaleString();
+const IMG = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+let TOKEN = '';            // page memory only, on purpose
+let roots = [], cwd = null, listing = null, selected = null, sort = { k: 'name', d: 1 };
+
+async function api(path, params = {}, raw = false) {
+  const u = new URL(location.origin + path); for (const [k, v] of Object.entries(params)) if (v != null) u.searchParams.set(k, v);
+  const r = await fetch(u, { headers: { 'X-Bridge-Sensitive-Token': TOKEN }, cache: 'no-store' });
+  if (r.status === 401) { TOKEN = ''; const ok = await askToken(); if (!ok) throw new Error('locked'); return api(path, params, raw); }
+  if (raw) { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r; }
+  const j = await r.json().catch(() => null);
+  if (!r.ok) { const e = new Error(j?.error?.message || `HTTP ${r.status}`); e.status = r.status; throw e; }
+  return j;
+}
+function askToken() {
+  return new Promise(res => {
+    const d = $('tokDlg'); $('tokIn').value = '';
+    const done = v => { $('tokOk').onclick = $('tokNo').onclick = null; d.onclose = null; d.close(); res(v); };
+    $('tokOk').onclick = () => { TOKEN = $('tokIn').value.trim(); done(!!TOKEN); }; $('tokNo').onclick = () => done(false); d.onclose = () => done(false);
+    $('tokIn').onkeydown = e => { if (e.key === 'Enter') $('tokOk').onclick(); };
+    d.showModal(); $('tokIn').focus();
+  });
+}
+$('lock').onclick = () => { TOKEN = ''; listing = null; $('list').innerHTML = ''; $('view').innerHTML = '<div class="muted">locked</div>'; $('crumbs').innerHTML = ''; start(); };
+
+async function start() {
+  $('err').textContent = '';
+  try {
+    const r = await api('/v1/fs/roots'); roots = r.roots; $('hidden').checked = !!r.show_hidden;
+    $('root').innerHTML = roots.map(x => `<option value="${esc(x.path)}">${esc(x.name)}</option>`).join('');
+    if (!roots.length) { $('err').textContent = 'no roots configured (~/.config/sysbridge/fs.json)'; return; }
+    await go(cwd && roots.some(x => cwd.startsWith(x.path)) ? cwd : roots[0].path);
+  } catch (e) { if (e.message !== 'locked') $('err').textContent = e.message; else $('view').innerHTML = '<div class="muted">Unlock with the sensitive token to browse.</div>'; }
+}
+async function go(path) {
+  $('err').textContent = '';
+  try { listing = await api('/v1/fs/ls', { path, hidden: $('hidden').checked ? 1 : 0 }); cwd = listing.path; selected = null; renderList(); renderCrumbs(); }
+  catch (e) { if (e.message !== 'locked') $('err').textContent = e.message; }
+}
+function renderCrumbs() {
+  const root = roots.find(r => cwd === r.path || cwd.startsWith(r.path + '/')); if (!root) return;
+  $('root').value = root.path;
+  const rel = cwd.slice(root.path.length).split('/').filter(Boolean); let acc = root.path;
+  let h = `<a data-go="${esc(root.path)}">${esc(root.name)}</a>`;
+  for (const p of rel) { acc += '/' + p; h += `<span>/</span><a data-go="${esc(acc)}">${esc(p)}</a>`; }
+  $('crumbs').innerHTML = h;
+}
+function renderList() {
+  const rows = [...listing.entries].sort((a, b) => (a.type !== 'dir') - (b.type !== 'dir') || ((sort.k === 'name' ? a.name.localeCompare(b.name) : (a[sort.k] || 0) - (b[sort.k] || 0)) * sort.d));
+  const th = (k, l, cls='') => `<th class="${cls}" data-sort="${k}">${l}${sort.k===k?(sort.d>0?' ▲':' ▼'):''}</th>`;
+  $('list').innerHTML = `<table><thead><tr>${th('name','name')}${th('size','size','num')}${th('mtime','modified')}<th>mode</th></tr></thead><tbody>` +
+    (listing.parent ? `<tr class="row" data-dir="${esc(listing.parent)}"><td class="name"><span class="i">↩</span>..</td><td></td><td></td><td></td></tr>` : '') +
+    rows.map(e => `<tr class="row ${selected===e.name?'on':''}" data-${e.type==='dir'?'dir':'file'}="${esc(cwd + '/' + e.name)}" data-name="${esc(e.name)}"><td class="name" title="${esc(e.name)}${e.target?' → '+esc(e.target):''}"><span class="i">${e.type==='dir'?'📁':e.link?'🔗':'📄'}</span>${esc(e.name)}</td><td class="num">${fmtB(e.size)}</td><td>${fmtT(e.mtime)}</td><td class="muted">${esc(e.mode)}</td></tr>`).join('') +
+    `</tbody></table><div class="muted" style="padding:.4rem .6rem">${listing.count} entries${listing.hidden_shown ? '' : ' · hidden files off'}</div>`;
+}
+$('list').addEventListener('click', e => {
+  const th = e.target.closest('th[data-sort]'); if (th) { sort = sort.k === th.dataset.sort ? { k: sort.k, d: -sort.d } : { k: th.dataset.sort, d: 1 }; renderList(); return; }
+  const tr = e.target.closest('tr.row'); if (!tr) return;
+  if (tr.dataset.dir) go(tr.dataset.dir); else if (tr.dataset.file) { selected = tr.dataset.name; renderList(); preview(tr.dataset.file, tr.dataset.name); }
+});
+$('crumbs').addEventListener('click', e => { const a = e.target.closest('a[data-go]'); if (a) go(a.dataset.go); });
+$('root').onchange = () => go($('root').value); $('hidden').onchange = () => cwd && go(cwd);
+
+async function preview(path, name) {
+  const v = $('view'); v.classList.add('show'); v.innerHTML = `<h2>${esc(name)}</h2><div class="muted">loading…</div>`;
+  try {
+    const st = await api('/v1/fs/stat', { path });
+    const meta = `<div class="meta"><span>${fmtB(st.size)}</span><span>${fmtT(st.mtime)}</span><span>${esc(st.mode)}</span><button id="dl">Download</button><span class="muted" style="font-family:ui-monospace,monospace">${esc(path)}</span></div>`;
+    if (IMG.test(name) && st.size < 20 * 1048576) {
+      const r = await api('/v1/fs/download', { path }, true); const url = URL.createObjectURL(await r.blob());
+      v.innerHTML = `<h2>${esc(name)}</h2>${meta}<img src="${url}" alt="">`;
+    } else {
+      let body;
+      try { const t = await api('/v1/fs/read', { path }); body = t.binary ? `<div class="muted">binary file — download to open it</div>` : `<pre>${esc(t.text)}</pre>`; }
+      catch (e) { body = `<div class="muted">${esc(e.message)}</div>`; }
+      v.innerHTML = `<h2>${esc(name)}</h2>${meta}${body}`;
+    }
+    $('dl').onclick = async () => { try { const r = await api('/v1/fs/download', { path }, true); const url = URL.createObjectURL(await r.blob()); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000); } catch (e) { $('err').textContent = e.message; } };
+  } catch (e) { if (e.message !== 'locked') v.innerHTML = `<h2>${esc(name)}</h2><div class="err">${esc(e.message)}</div>`; }
+}
+start();
+</script>

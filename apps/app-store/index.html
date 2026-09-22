@@ -1,0 +1,118 @@
+<!--
+  App Store — browse the apps shipped in this repo's store/ folder and install
+  them with one click. A built-in sysbridge app: served at
+  http://app-store.localhost/ and it talks only to the bridge on its own origin.
+
+    GET  /v1/store                      catalogue (title, icon, version, author, installed?, update?)
+    POST /v1/store/<slug>/install       token; copies store/<slug>/index.html through the upload path
+    DELETE /v1/apps/<slug>              token + confirm; moves the installed copy to .trash
+
+  Adding an app to the store is a pull request that adds store/<slug>/index.html;
+  the catalogue test (tests/test_store.py) is the PR check.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App Store</title>
+<meta name="description" content="Browse the apps in the repo's store/ folder and install them with one click.">
+<meta name="app-icon" content="🛍️">
+<style>
+  :root { color-scheme: light dark; --bg:#f6f7f9; --fg:#1c1f24; --muted:#6b7280; --card:#fff; --line:#e3e6ea; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --accent:#2563eb;
+          font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 14px; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --fg:#e5e7eb; --muted:#9aa3ad; --card:#171b21; --line:#262b33; } }
+  * { box-sizing: border-box; } body { margin: 0; background: var(--bg); color: var(--fg); }
+  header { display:flex; align-items:center; gap:1rem; padding:.7rem 1.2rem; border-bottom:1px solid var(--line); }
+  header h1 { font-size:1.05rem; margin:0; font-weight:600; } header .sub { color:var(--muted); font-size:.85rem; } header .right { margin-left:auto; display:flex; gap:.5rem; }
+  main { padding:1.2rem; max-width:64rem; margin:0 auto; }
+  .list { display:grid; gap:.8rem; }
+  .app { display:grid; grid-template-columns:3.6rem 1fr auto; gap:.9rem; align-items:center; background:var(--card); border:1px solid var(--line); border-radius:.8rem; padding:.8rem 1rem; }
+  .icon { width:3.6rem; height:3.6rem; border-radius:1rem; display:grid; place-items:center; font-size:1.9rem; background:var(--bg); border:1px solid var(--line); }
+  .icon.text { font-size:1.1rem; font-weight:700; color:var(--accent); }
+  .name { font-weight:600; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; } .desc { color:var(--muted); margin:.15rem 0; } .meta { color:var(--muted); font-size:.78rem; }
+  .pill { display:inline-block; padding:.05rem .5rem; border-radius:1rem; font-size:.72rem; font-weight:600; color:#fff; background:var(--muted); }
+  .pill.ok { background:var(--ok); } .pill.warn { background:var(--warn); } .pill.bad { background:var(--bad); }
+  .actions { display:flex; flex-direction:column; gap:.4rem; align-items:stretch; min-width:7rem; }
+  button { font:inherit; padding:.35rem .8rem; border-radius:.45rem; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); } button:disabled { opacity:.5; cursor:not-allowed; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); } button.danger { color:var(--bad); }
+  a.open { text-align:center; font-size:.85rem; color:var(--accent); }
+  .err { color:var(--bad); white-space:pre-wrap; font-size:.85rem; margin:.5rem 0; } .err:empty { display:none; }
+  .problems { color:var(--warn); font-size:.78rem; white-space:pre-wrap; }
+  .empty { color:var(--muted); padding:2rem; text-align:center; }
+  .howto { margin-top:2rem; color:var(--muted); font-size:.85rem; border-top:1px solid var(--line); padding-top:1rem; } code { font-size:.85em; background:var(--card); padding:.05rem .3rem; border-radius:.3rem; }
+  dialog { border:1px solid var(--line); border-radius:.8rem; background:var(--card); color:var(--fg); padding:1.1rem 1.3rem; width:min(30rem,92vw); } dialog::backdrop { background:rgba(0,0,0,.45); }
+  dialog h3 { margin:0 0 .6rem; font-size:1rem; } dialog .row { display:flex; gap:.5rem; justify-content:flex-end; margin-top:1rem; }
+</style>
+<header><h1>App Store</h1><span class="sub" id="status">…</span><div class="right"><button id="refresh">Refresh</button></div></header>
+<main>
+  <div class="err" id="err"></div>
+  <div class="list" id="list"></div>
+  <div class="howto">Apps live in the repo's <code>store/&lt;slug&gt;/index.html</code>. To add one, open a pull request with a single-file app carrying
+    <code>&lt;title&gt;</code>, <code>&lt;meta name="description"&gt;</code>, <code>&lt;meta name="app-icon"&gt;</code> and optionally
+    <code>app-version</code> / <code>app-author</code>. It must be inline-only and talk to <code>location.origin</code> only; the catalogue test checks that.
+    Installing needs the bridge token — open this app from the launcher and it is handed over automatically.</div>
+</main>
+<dialog id="dlg"><h3 id="dTitle"></h3><div id="dBody"></div><div class="row"><button id="dNo">Cancel</button><button id="dYes" class="danger">Uninstall</button></div></dialog>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const token = () => { try { return localStorage.getItem('sysbridge.token') || ''; } catch (e) { return ''; } };
+const PORT = location.port && location.port !== '80' ? ':' + location.port : '';
+const fmtBytes = n => n >= 1048576 ? (n/1048576).toFixed(1)+' MiB' : n >= 1024 ? (n/1024).toFixed(0)+' KiB' : n+' B';
+async function api(method, path, body, headers = {}) {
+  const r = await fetch(location.origin + path, { method, body, headers, cache: 'no-store' });
+  const t = await r.text(); let j = null; try { j = t ? JSON.parse(t) : null; } catch (e) { j = { raw: t }; }
+  if (!r.ok) { const e = new Error(j?.error?.message || `HTTP ${r.status}`); e.status = r.status; throw e; }
+  return j;
+}
+const describe = e => e.status === 401 ? 'The bridge wants your token: open this app from the launcher (which hands it over), or paste it there in Settings.' : e.message;
+let items = [];
+async function load() {
+  try { items = await api('GET', '/v1/store'); $('err').textContent = ''; }
+  catch (e) { $('err').textContent = `bridge not answering: ${e.message}`; items = []; }
+  const n = items.length, inst = items.filter(i => i.installed).length, upd = items.filter(i => i.update_available).length;
+  $('status').textContent = `${n} app${n===1?'':'s'} in the store · ${inst} installed${upd ? ` · ${upd} update${upd===1?'':'s'}` : ''}${token() ? '' : ' · no token'}`;
+  render();
+}
+function render() {
+  if (!items.length) { $('list').innerHTML = '<div class="empty">The store folder is empty. Add <code>store/&lt;slug&gt;/index.html</code> to the repo.</div>'; return; }
+  $('list').innerHTML = items.map(a => {
+    const isEmoji = /\p{Extended_Pictographic}/u.test(a.icon || '');
+    const bad = a.problems && a.problems.length;
+    const pill = bad ? '<span class="pill bad">invalid</span>' : a.builtin ? '<span class="pill">built-in</span>' : a.update_available ? '<span class="pill warn">update available</span>' : a.installed ? '<span class="pill ok">installed</span>' : '';
+    const meta = [a.version && 'v' + a.version, a.author && 'by ' + a.author, fmtBytes(a.size)].filter(Boolean).join(' · ');
+    const actions = bad ? `<div class="problems">${esc(a.problems.join('\n'))}</div>`
+      : a.builtin ? `<a class="open" href="http://${esc(a.slug)}.localhost${PORT}/">Open</a>`
+      : a.installed ? `${a.update_available ? `<button class="primary" data-install="${esc(a.slug)}">Update</button>` : ''}<a class="open" href="${esc(openHref(a.slug))}">Open</a><button class="danger" data-uninstall="${esc(a.slug)}" data-title="${esc(a.title)}">Uninstall</button>`
+      : `<button class="primary" data-install="${esc(a.slug)}">Install</button>`;
+    return `<div class="app"><div class="icon${isEmoji?'':' text'}">${esc(a.icon)}</div>
+      <div><div class="name">${esc(a.title)} ${pill}</div><div class="desc">${esc(a.description || '')}</div><div class="meta">${esc(meta)} · <code>http://${esc(a.slug)}.localhost${PORT}/</code></div></div>
+      <div class="actions">${actions}</div></div>`;
+  }).join('');
+}
+const openHref = slug => `http://${slug}.localhost${PORT}/` + (token() ? '#sysbridge-token=' + encodeURIComponent(token()) : '');
+$('list').addEventListener('click', async e => {
+  const i = e.target.closest('button[data-install]'), u = e.target.closest('button[data-uninstall]');
+  if (i) {
+    i.disabled = true; $('err').textContent = '';
+    try { await api('POST', `/v1/store/${i.dataset.install}/install`, null, { 'X-Bridge-Token': token() }); await load(); }
+    catch (err) { $('err').textContent = describe(err); i.disabled = false; }
+  } else if (u) {
+    $('dTitle').textContent = `Uninstall ${u.dataset.title}?`;
+    $('dBody').innerHTML = `The installed copy moves to <code>.trash/</code> on the bridge (not deleted). It stays in the store, so you can install it again.`;
+    const ok = await confirmDlg(); if (!ok) return;
+    try { await api('DELETE', `/v1/apps/${u.dataset.uninstall}`, JSON.stringify({ confirm: true }), { 'X-Bridge-Token': token(), 'Content-Type': 'application/json' }); await load(); }
+    catch (err) { $('err').textContent = describe(err); }
+  }
+});
+function confirmDlg() {
+  const d = $('dlg');
+  return new Promise(res => {
+    const done = v => { $('dYes').onclick = $('dNo').onclick = null; d.onclose = null; d.close(); res(v); };
+    $('dYes').onclick = () => done(true); $('dNo').onclick = () => done(false); d.onclose = () => done(false); d.showModal();
+  });
+}
+$('refresh').onclick = load;
+load();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+</script>

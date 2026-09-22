@@ -8,22 +8,28 @@ own: system data (GPU memory, RAM, disk, CPU, battery, NPU, which processes
 hold the GPU, listening ports) and an allowlist of named actions. Python 3
 stdlib, zero dependencies, no build step.
 
-It ships with one app built in, **Llama Dashboard**: what a `llama-server`
-**router** is doing right now — which model is resident, who is generating,
-how much GPU memory each process holds — with confirm-guarded load/unload. It
-is an ordinary app: it talks only to the bridge, and the bridge talks to the
-llama-servers.
-Install more by uploading an `.html` file from the launcher; add tiles that
-link to UIs on other ports so you never remember a port again.
+Two apps are built in: **Llama Dashboard** (what a `llama-server` router is
+doing right now, with confirm-guarded load/unload) and **App Store** (install
+the apps in this repo's `store/` folder with one click). The store ships
+**WTOP** (htop in a tab), **ChatBridge** (chat with the loaded models) and
+**Web-File** (a read-only file browser). Anyone can add an app with a pull
+request. You can also upload any `.html` from the launcher, or add tiles that
+link to UIs on other ports.
+
+Every app is served on **its own origin**, `http://<slug>.localhost/`, so the
+browser isolates apps from one another — an installed app cannot read another
+app's data or token.
 
 ```
 http://localhost/                    launcher: grid of installed apps
-http://localhost/apps/llama-dash/    built-in Llama Dashboard
-http://localhost/apps/<slug>/        anything you upload; link tiles 302 to their URL
-http://localhost/v1/...              the API every app uses (same origin, no CORS dance)
-        │ GET /v1/all  POST /v1/action/…  POST /v1/apps  POST /v1/llama/…
+http://llama-dash.localhost/         built-in Llama Dashboard      (fallback: http://localhost/apps/llama-dash/)
+http://app-store.localhost/          built-in App Store
+http://<slug>.localhost/             anything installed or uploaded; link tiles 302 to their URL
+http://<any>.localhost/v1/...        the API, answered on every host: an app calls its own origin
+        │ GET /v1/all  POST /v1/action/…  POST /v1/apps  POST /v1/store/…  POST /v1/llama/…  GET /v1/fs/…
         ▼
-  sysbridge  →  /sys /proc rocm-smi xrt-smi df ss ps
+  sysbridge (one process, port 80, routes on Host)
+             →  /sys /proc rocm-smi xrt-smi df ss ps
              →  llama-server router :8080, reviewer :8127   (SYSBRIDGE_LLAMA_SERVERS)
 ```
 
@@ -116,12 +122,42 @@ URL — the router's own web UI on :8080, say — so the launcher also covers UI
 that are not bridge apps. Everything uploaded is served from `/apps/<slug>/`
 on the launcher's own origin.
 
-Every app is same-origin with the API, so no app needs a bridge URL, and the
-token pasted once in the launcher's Settings (`localStorage` key
-`sysbridge.token`) serves every app. Apps keep their own state in
-`localStorage` under `app:<slug>:…`; same-origin apps share one store, so
-unprefixed keys collide. Built-in apps (`apps/<slug>/index.html` in the repo)
-cannot be uninstalled.
+**Origins and tokens.** Each app runs at `http://<slug>.localhost/`, its own
+origin, so its storage is invisible to every other app. `*.localhost` resolves
+to this machine in Chromium, Firefox and systemd-resolved with no setup; the
+path form `/apps/<slug>/` remains as a fallback and shares the launcher's
+origin. When you open an app from the launcher, the launcher hands it the
+bridge token in the URL fragment (never sent to the server); the bridge's
+injected home script stores it in that origin and strips it from the address
+bar. Apps read the token from `localStorage` key `sysbridge.token` at call
+time. The API answers on every host, so an app always calls `location.origin`.
+
+There are **two tokens**, both 0600 under `$XDG_RUNTIME_DIR/sysbridge/`:
+`token` for installs, actions and model load/unload, which apps may keep; and
+`token-sensitive` for filesystem access, which apps must never store — Web-File
+asks for it each session and keeps it in page memory. `python -m bridge --token`
+prints both.
+
+**The App Store.** `store/<slug>/index.html` in the repo is the catalogue.
+The built-in App Store app lists it with install/update/uninstall; `GET /v1/store`
+is the data. To add an app, open a pull request adding one folder whose name
+is the slug of the app's `<title>`. `python -m unittest tests.test_store` is
+the PR check: title, description and icon present, one file under 4 MiB, no
+external script/stylesheet/media, no hardcoded `localhost:port` (use
+`location.origin`), no home link of its own (the bridge injects one).
+
+| store app | what | needs |
+|---|---|---|
+| **WTOP** | htop in a tab: per-core CPU, memory, uptime, load, every process with instantaneous CPU and RSS. Read-only. | `top` probe |
+| **ChatBridge** | chat with the models loaded right now; streaming; conversations stay in the browser | `POST /v1/llama/<server>/chat` — loaded models only, so a chat can never load or evict |
+| **Web-File** | read-only file browser and previewer under the allowed roots (your home by default) | `GET /v1/fs/…` with the sensitive token; roots in `~/.config/sysbridge/fs.json` |
+
+A terminal app was considered and deliberately **not** built: the service runs
+with `ProtectHome=read-only`, so a shell inside it could not do real work, and
+a shell is the one feature where a single bug is total compromise. If it comes,
+it will be a separate opt-in unit on its own origin with the sensitive token.
+
+Built-in apps (`apps/<slug>/index.html` in the repo) cannot be uninstalled.
 
 ## API
 
@@ -141,16 +177,21 @@ header, responses capped at 1 MiB.
 | POST | `/apps` | install: body `text/html` = the page (≤ 4 MiB, optional `X-Filename`), or `application/json` `{"kind":"link","url",…}`; token required |
 | DELETE | `/apps/{slug}` | uninstall to `.trash/`; token + `{"confirm": true}`; 403 for built-ins |
 | POST | `/llama/{server}/load` `…/unload` | `{"model": id, "confirm": true}`; token; the model must be one the router lists; 409 for a single-model server |
+| POST | `/llama/{server}/chat` | OpenAI-style `{model, messages, temperature, top_p, max_tokens, stream}` streamed through; **loaded models only**; fields whitelisted; no token; ≤ 4 concurrent |
+| GET | `/store` · `/store/{slug}` | catalogue with `installed`, `update_available`, `problems` |
+| POST | `/store/{slug}/install` | token; refuses entries with `problems` |
+| GET | `/fs/roots` · `/fs/ls?path=` · `/fs/stat?path=` · `/fs/read?path=` · `/fs/download?path=` | **sensitive token**; read-only; paths must resolve inside a configured root |
 
-Outside `/v1`: `/` is the launcher, `/apps/<slug>/…` serves an app's files
-(slug validated, no traversal, no listings; link apps 302).
+Outside `/v1`: on `localhost` `/` is the launcher and `/apps/<slug>/…` an app;
+on `<slug>.localhost` `/…` is that app's files (validated slug, no traversal,
+no listings; link apps 302). Every HTML app page gets the home menu appended.
 
 Envelope: `{ok, name, ts, ttl_ms, stale, data, error}`. `stale: true` means
 the value is the last good one and the refresh failed — clients keep it and
 badge it.
 
 Probes: `gpu` `cpu` `ram` `disk` `battery` `npu` `rocm_pids` `kfd_holders`
-`processes` `ports` `router_models` `llama` `llama_slots`. The last three watch
+`processes` `ports` `router_models` `llama` `llama_slots` `top`. The last three watch
 the llama-servers named in `SYSBRIDGE_LLAMA_SERVERS` (default
 `router=http://127.0.0.1:8080,reviewer=http://127.0.0.1:8127`); every router
 GET the bridge makes carries `autoload=false`. `python -m bridge --list` prints them with
@@ -179,13 +220,14 @@ says what will be evicted.
 ## Security model
 
 - **Bind 127.0.0.1 only.** Other addresses are not offered.
-- **Uploads are trusted code, by design.** An installed app runs on the bridge's origin with the same access as the launcher. Only the token holder can install; a remote page cannot (403, no CORS). Files are served with `nosniff` and only from inside the app's own directory.
+- **Per-app origins are the trust boundary.** An installed app runs on `http://<slug>.localhost/`, isolated by the browser from the launcher and from every other app. It holds only the ordinary token, handed over when opened. Only the token holder can install; a remote page cannot (403, no CORS). Files are served with `nosniff` and only from inside the app's own directory.
+- **The filesystem is the one place a client-supplied path is accepted.** It is fenced by `realpath` containment inside configured roots, is read-only, and needs the sensitive token that no app is allowed to store.
 - **Origin allowlist on every request:** exactly `null` (a `file://` page),
   `http://(127.0.0.1|localhost|[::1])(:port)?`, or values passed with
   `--origins`. Allowed → reflected with `Vary: Origin`. Anything else → **403
   with no CORS headers**, so a remote page cannot read a byte. No Origin (curl)
   → allowed: the gate protects the browser, not the shell.
-- **Actions, installs, uninstalls and model load/unload need a token** from `$XDG_RUNTIME_DIR/sysbridge/token`
+- **Actions, installs, uninstalls and model load/unload need the ordinary token** from `$XDG_RUNTIME_DIR/sysbridge/token`
   (0600, created at start, never served). Constant-time compare.
 - **Nothing from the client is interpreted** beyond probe/action names
   (`^[a-z0-9_]{1,32}$`, must exist) and the `confirm` boolean.
@@ -209,7 +251,7 @@ dashboard uses (including `?autoload=false`), and a done-checklist.
 
 ```bash
 ./install.sh --dry-run                # what the installer would do on this machine
-python -m unittest discover tests     # 64 tests: parsers, registry, apps store, llama upstreams (fake server), CORS/token API over a socket
+python -m unittest discover tests     # 85 tests: parsers, registry, apps, store catalogue (the PR check), top, fs, llama upstreams (fake server), CORS/tokens/per-app origins over a socket
 python -m bridge --once rocm_pids     # any probe, as JSON, exit 1 on error
 python -m bridge --list
 python -m bridge --port 8182          # launcher at http://localhost:8182/ without the port-80 sysctl
@@ -225,7 +267,10 @@ Layout:
 bridge/
   __main__.py   argparse: --port --bind --origins --actions-file --apps-root --once NAME --list --token
   server.py     ThreadingHTTPServer, routing, static apps, CORS, SSE, token check
-  llama.py      llama-server upstreams as probes (llama, llama_slots) + load/unload
+  llama.py      llama-server upstreams as probes (llama, llama_slots) + load/unload + streaming chat proxy
+  top.py        the `top` probe: instantaneous per-process CPU from /proc deltas
+  store.py      the store catalogue, validate() (the PR check), install
+  fs.py         read-only filesystem under configured roots (sensitive token)
   apps.py       installed apps: manifests from <title>/<meta>, install/replace/uninstall to .trash, traversal-safe resolve
   www/launcher.html   the home screen at /
   registry.py   @probe registry, per-probe TTL cache + lock, async refresh, error isolation
@@ -233,7 +278,8 @@ bridge/
   actions.py    allowlist file → fixed argv, confirm flag, mtime reload
   parsers.py    pure text → dict parsers (unit-tested)
   util.py       run(), read_sysfs(), hwmon_by_name(), first_amdgpu_card()
-apps/llama-dash/index.html   built-in app (any apps/<slug>/index.html is one)
+apps/llama-dash/  apps/app-store/   built-in apps (any apps/<slug>/index.html is one)
+store/wtop/  store/chatbridge/  store/web-file/   the catalogue (PRs add folders)
 skills/sysbridge-client/SKILL.md
 systemd/  config/  tests/
 ```

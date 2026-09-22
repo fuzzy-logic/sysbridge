@@ -38,12 +38,15 @@ import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
+import urllib.parse
 from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
 from .actions import Actions
 from .apps import Apps, AppsError, MAX_APP_BYTES, content_type_for, repo_builtins
 from . import llama
+from .store import Store
+from .fs import Fs, FsError
 from .probes import REG
 from .registry import error_envelope, valid_name
 from .util import xdg_runtime_dir
@@ -68,11 +71,16 @@ class Config:
     token_file: Optional[str] = None
     sensitive_token_file: Optional[str] = None
     apps_root: Optional[str] = None            # default: see apps.apps_root()
+    store_root: Optional[str] = None           # default: <repo>/store
+    fs_config: Optional[str] = None            # default: ~/.config/sysbridge/fs.json
+    fs_roots: Optional[list] = None            # test override
     builtins: Optional[dict] = None            # default: apps/<slug>/index.html in the repo
 
 
 LAUNCHER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "www", "launcher.html")
 MAX_APP_BODY = MAX_APP_BYTES + 64 * 1024
+MAX_CHAT_BODY = 1 << 20
+MAX_CHATS = 4
 
 # Appended to every HTML page served for an app (its own host or /apps/<slug>/)
 # so any uploaded app, with no code of its own, gets a way back: a small round
@@ -157,10 +165,13 @@ class Bridge(ThreadingHTTPServer):
         self.cfg = cfg
         self.actions = Actions(cfg.actions_file)
         self.apps = Apps(cfg.apps_root, cfg.builtins if cfg.builtins is not None else repo_builtins())
+        self.store = Store(cfg.store_root)
+        self.fs = Fs(cfg.fs_config, roots=cfg.fs_roots)
         self.token = ensure_token(cfg.token_file or token_path())
         self.sensitive_token = ensure_token(cfg.sensitive_token_file or sensitive_token_path())
         self.sem = threading.BoundedSemaphore(MAX_CONCURRENCY)
         self.stream_clients = 0
+        self.chat_clients = 0
         self.stream_lock = threading.Lock()
         fam = socket.AF_INET6 if ":" in cfg.bind else socket.AF_INET
         self.address_family = fam
@@ -240,7 +251,8 @@ class Handler(BaseHTTPRequestHandler):
             n = 0
         if n <= 0:
             return b""
-        limit = MAX_APP_BODY if urlsplit(self.path).path == "/v1/apps" else self.MAX_BODY
+        path = urlsplit(self.path).path
+        limit = MAX_APP_BODY if path == "/v1/apps" else MAX_CHAT_BODY if path.startswith("/v1/llama/") and path.endswith("/chat") else self.MAX_BODY
         if n > limit:
             self.close_connection = True
             return None
@@ -375,6 +387,15 @@ class Handler(BaseHTTPRequestHandler):
             what = parts[1]
             if what == "apps" and len(parts) == 2:
                 return self._send(200, self.server.apps.list(), origin)
+            if what == "fs" and len(parts) == 3:
+                return self._get_fs(parts[2], q, origin)
+            if what == "store" and len(parts) == 2:
+                return self._send(200, self.server.store.list(self.server.apps), origin)
+            if what == "store" and len(parts) == 3:
+                e = self.server.store.entry(parts[2][:64], self.server.apps)
+                if e is None:
+                    return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "no such store app"}}, origin)
+                return self._send(200, e, origin)
             if what == "health" and len(parts) == 2:
                 return self._send(200, {"ok": True, "version": __version__, "uptime_s": round(time.time() - START_TS, 1),
                                         "probes": REG.names(), "actions_enabled": self.server.actions.enabled(),
@@ -411,8 +432,25 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
         if parts == ["v1", "apps"]:
             return self._post_app(raw, origin)
+        if parts[:2] == ["v1", "llama"] and len(parts) == 4 and parts[3] == "chat":
+            return self._post_chat(parts[2][:32], raw, origin)
         if parts[:2] == ["v1", "llama"] and len(parts) == 4:
             return self._post_llama(parts[2][:32], parts[3][:16], raw, origin)
+        if parts[:2] == ["v1", "store"] and len(parts) == 4 and parts[3] == "install":
+            if not self._token_ok():
+                return self._send(401, {"ok": False, "error": {"type": "Unauthorized", "message": "missing or wrong X-Bridge-Token"}}, origin)
+            slug = parts[2][:64]
+            e = self.server.store.entry(slug, self.server.apps)
+            if e is None:
+                return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "no such store app"}}, origin)
+            if e["problems"]:
+                return self._send(409, {"ok": False, "error": {"type": "StoreEntryInvalid", "message": "; ".join(e["problems"])}}, origin)
+            try:
+                m = self.server.store.install(slug, self.server.apps)
+            except AppsError as ex:
+                return self._send(ex.status, {"ok": False, "error": {"type": "AppsError", "message": str(ex)}}, origin)
+            print(f"sysbridge: store install {slug} replaced={m.get('replaced')} origin={origin or '-'}", file=sys.stderr, flush=True)
+            return self._send(201, {"ok": True, "app": m}, origin)
         if parts[:2] != ["v1", "action"] or len(parts) != 3:
             return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "POST only to /v1/action/{name}, /v1/apps or /v1/llama/{server}/{load|unload}"}}, origin)
         name = parts[2][:64]
@@ -482,6 +520,90 @@ class Handler(BaseHTTPRequestHandler):
               file=sys.stderr, flush=True)
         REG.get("llama", force=True)  # refresh the cache so the next poll shows the new state
         return self._send(200 if result["ok"] else 502, result, origin)
+
+    def _get_fs(self, op: str, q: dict, origin: Optional[str]) -> None:
+        """Read-only filesystem for Web-File. Sensitive token on every call; paths fenced by Fs.resolve."""
+        if op not in ("roots", "ls", "stat", "read", "download"):
+            return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "fs ops: roots, ls, stat, read, download"}}, origin)
+        if not self._sensitive_ok():
+            return self._send(401, {"ok": False, "error": {"type": "Unauthorized", "message": "missing or wrong X-Bridge-Sensitive-Token"}}, origin)
+        fs = self.server.fs
+        path = (q.get("path") or [""])[0]
+        try:
+            if op == "roots":
+                return self._send(200, {"ok": True, "roots": fs.roots(), "show_hidden": fs.show_hidden()}, origin)
+            if op == "ls":
+                hidden = {"1": True, "0": False}.get((q.get("hidden") or [""])[0])
+                return self._send(200, {"ok": True, **fs.ls(path, hidden)}, origin)
+            if op == "stat":
+                return self._send(200, {"ok": True, **fs.stat(path)}, origin)
+            if op == "read":
+                return self._send(200, {"ok": True, **fs.read(path)}, origin)
+            real, size, name = fs.open_download(path)
+        except FsError as e:
+            return self._send(e.status, {"ok": False, "error": {"type": "FsError", "message": str(e)}}, origin)
+        print(f"sysbridge: fs download {real} ({size} B) origin={origin or '-'}", file=sys.stderr, flush=True)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(name))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self._cors(origin)
+        self.end_headers()
+        try:
+            with open(real, "rb") as f:
+                while True:
+                    chunk = f.read(1 << 20)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            self.close_connection = True
+
+    def _post_chat(self, server: str, raw: Optional[bytes], origin: Optional[str]) -> None:
+        """Stream /v1/chat/completions through the bridge. No token: no side effect beyond GPU time,
+        and only already-loaded models are accepted, so nothing can be evicted or loaded."""
+        try:
+            payload = llama.chat_payload(self._parse_json(raw or b""))
+        except ValueError as e:
+            return self._send(400, {"ok": False, "error": {"type": "BadRequest", "message": str(e)}}, origin)
+        except llama.LlamaError as e:
+            return self._send(e.status, {"ok": False, "error": {"type": "LlamaError", "message": str(e)}}, origin)
+        with self.server.stream_lock:
+            if self.server.chat_clients >= MAX_CHATS:
+                return self._send(429, {"ok": False, "error": {"type": "TooManyChats", "message": f"at most {MAX_CHATS} concurrent chats"}}, origin)
+            self.server.chat_clients += 1
+        resp = None
+        try:
+            try:
+                status, ctype, resp = llama.chat_open(server, payload)
+            except llama.LlamaError as e:
+                return self._send(e.status, {"ok": False, "error": {"type": "LlamaError", "message": str(e)}}, origin)
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self._cors(origin)
+            self.end_headers()
+            self.close_connection = True
+            while True:
+                chunk = resp.readline() if ctype.startswith("text/event-stream") else resp.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # client went away (Stop button); closing resp below tells llama-server to stop
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            with self.server.stream_lock:
+                self.server.chat_clients -= 1
 
     def do_DELETE(self) -> None:
         origin = self._origin()

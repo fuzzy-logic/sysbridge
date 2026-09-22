@@ -1,0 +1,175 @@
+<!--
+  ChatBridge — chat with the models that are loaded right now.
+  A sysbridge store app: one file, talks only to its own origin.
+    GET  /v1/all?names=llama                 which servers/models are loaded (the model list)
+    POST /v1/llama/<server>/chat             streams /v1/chat/completions through the bridge;
+                                             only LOADED models are accepted, so chatting can never
+                                             load or evict a model. No token needed.
+  Conversations live in this origin's localStorage (chatbridge.convs).
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChatBridge</title>
+<meta name="description" content="Chat with whichever llama-server models are loaded right now. Streaming, conversations kept in the browser, nothing leaves the machine.">
+<meta name="app-icon" content="💬">
+<meta name="app-version" content="1.0">
+<meta name="app-author" content="sysbridge">
+<style>
+  :root { color-scheme: light dark; --bg:#f6f7f9; --fg:#1c1f24; --muted:#6b7280; --card:#fff; --line:#e3e6ea; --accent:#2563eb; --bad:#dc2626; --user:#e8efff; --code:#eef0f3;
+          font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 14px; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --fg:#e5e7eb; --muted:#9aa3ad; --card:#171b21; --line:#262b33; --user:#1d2a44; --code:#0b0e12; } }
+  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--fg); height:100vh; display:grid; grid-template-columns: 16rem 1fr; }
+  aside { border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  aside header { padding:.7rem .8rem; display:flex; align-items:center; gap:.5rem; border-bottom:1px solid var(--line); } aside h1 { font-size:1rem; margin:0; font-weight:600; flex:1; }
+  .convs { overflow:auto; flex:1; } .conv { padding:.5rem .8rem; cursor:pointer; border-bottom:1px solid var(--line); display:flex; gap:.4rem; align-items:center; }
+  .conv.on { background:var(--card); } .conv span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conv small { color:var(--muted); }
+  .conv button { opacity:0; } .conv:hover button { opacity:1; }
+  section { display:flex; flex-direction:column; min-height:0; }
+  .bar { display:flex; gap:.5rem; align-items:center; padding:.5rem .8rem; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .bar label { color:var(--muted); font-size:.8rem; } .grow { flex:1; }
+  select, input, textarea, button { font:inherit; padding:.3rem .55rem; border:1px solid var(--line); border-radius:.45rem; background:var(--card); color:var(--fg); }
+  button { cursor:pointer; } button:hover:not(:disabled) { border-color:var(--accent); } button:disabled { opacity:.5; cursor:not-allowed; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); } button.small { padding:.1rem .4rem; font-size:.8rem; }
+  .msgs { flex:1; overflow:auto; padding:1rem; display:flex; flex-direction:column; gap:.8rem; }
+  .msg { max-width: 52rem; padding:.6rem .9rem; border-radius:.8rem; line-height:1.45; overflow-wrap:anywhere; }
+  .msg.user { background:var(--user); align-self:flex-end; } .msg.assistant { background:var(--card); border:1px solid var(--line); align-self:flex-start; }
+  .msg.system { color:var(--muted); font-size:.85rem; align-self:center; } .msg .who { color:var(--muted); font-size:.72rem; margin-bottom:.2rem; }
+  .msg pre { background:var(--code); padding:.6rem; border-radius:.5rem; overflow-x:auto; font-size:.85em; } .msg code { background:var(--code); padding:.05rem .3rem; border-radius:.3rem; font-size:.9em; } .msg pre code { padding:0; background:none; }
+  .msg details { color:var(--muted); font-size:.85em; margin-bottom:.3rem; } .msg .cursor::after { content:"▍"; animation: blink 1s steps(1) infinite; } @keyframes blink { 50% { opacity:0; } }
+  .compose { display:flex; gap:.5rem; padding:.7rem .8rem; border-top:1px solid var(--line); align-items:flex-end; }
+  .compose textarea { flex:1; resize:none; min-height:2.6rem; max-height:12rem; }
+  .err { color:var(--bad); font-size:.85rem; padding:0 .8rem .4rem; white-space:pre-wrap; } .err:empty { display:none; }
+  .muted { color:var(--muted); } .empty { margin:auto; color:var(--muted); text-align:center; max-width:30rem; }
+  @media (max-width: 48rem) { body { grid-template-columns: 1fr; } aside { display:none; } }
+</style>
+<aside>
+  <header><h1>ChatBridge</h1><button id="newBtn" class="small" title="New conversation">＋</button></header>
+  <div class="convs" id="convs"></div>
+</aside>
+<section>
+  <div class="bar">
+    <label>model</label><select id="model"></select>
+    <label>temp <input id="temp" type="number" min="0" max="2" step="0.1" value="0.7" style="width:4.5rem"></label>
+    <label>max <input id="maxtok" type="number" min="16" max="65536" step="256" value="4096" style="width:5.5rem"></label>
+    <span class="grow"></span>
+    <button id="sysBtn" class="small">system prompt</button>
+    <span class="muted" id="status"></span>
+  </div>
+  <div class="err" id="err"></div>
+  <div class="msgs" id="msgs"></div>
+  <div class="compose">
+    <textarea id="input" placeholder="Message… (Enter to send, Shift+Enter for a newline)"></textarea>
+    <button id="send" class="primary">Send</button>
+    <button id="stop" hidden>Stop</button>
+  </div>
+</section>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const LS = 'chatbridge.convs';
+let convs = []; try { convs = JSON.parse(localStorage.getItem(LS) || '[]'); } catch (e) {}
+let cur = convs[0]?.id || null, models = [], ctl = null;
+const save = () => { try { localStorage.setItem(LS, JSON.stringify(convs.slice(0, 200))); } catch (e) {} };
+const conv = () => convs.find(c => c.id === cur);
+function newConv() { const c = { id: Date.now().toString(36), title: 'New chat', model: $('model').value || null, system: '', msgs: [], ts: Date.now() }; convs.unshift(c); cur = c.id; save(); renderConvs(); renderMsgs(); $('input').focus(); }
+function renderConvs() {
+  $('convs').innerHTML = convs.map(c => `<div class="conv ${c.id===cur?'on':''}" data-id="${c.id}"><span title="${esc(c.title)}">${esc(c.title)}</span><small>${c.msgs.length}</small><button class="small" data-del="${c.id}" title="Delete">✕</button></div>`).join('') || '<div class="conv muted">no conversations yet</div>';
+}
+$('convs').addEventListener('click', e => {
+  const d = e.target.closest('button[data-del]'); if (d) { convs = convs.filter(c => c.id !== d.dataset.del); if (cur === d.dataset.del) cur = convs[0]?.id || null; save(); renderConvs(); renderMsgs(); return; }
+  const c = e.target.closest('.conv[data-id]'); if (c) { cur = c.dataset.id; renderConvs(); renderMsgs(); if (conv()?.model) $('model').value = conv().model; }
+});
+$('newBtn').onclick = newConv;
+
+// -------- markdown-lite: fenced code, inline code, bold, italics, links, line breaks. No HTML passes through.
+function md(t) {
+  const parts = String(t).split(/```/); let out = '';
+  parts.forEach((p, i) => {
+    if (i % 2) { const nl = p.indexOf('\n'); const lang = nl >= 0 ? p.slice(0, nl).trim() : ''; const code = nl >= 0 ? p.slice(nl + 1) : p; out += `<pre><code data-lang="${esc(lang)}">${esc(code.replace(/\n$/, ''))}</code></pre>`; }
+    else out += esc(p).replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>').replace(/(^|\s)\*([^*\n]+)\*/g, '$1<i>$2</i>')
+      .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>').replace(/\n/g, '<br>');
+  });
+  return out;
+}
+function renderMsgs(streaming) {
+  const c = conv(); const box = $('msgs');
+  if (!c) { box.innerHTML = `<div class="empty">Pick a loaded model and start a conversation.<br><span class="muted">Only models already loaded on a server are offered — chatting never loads or evicts anything. Load models from the Llama Dashboard.</span></div>`; return; }
+  const items = [];
+  if (c.system) items.push(`<div class="msg system">system: ${esc(c.system)}</div>`);
+  c.msgs.forEach((m, i) => {
+    const last = i === c.msgs.length - 1 && streaming && m.role === 'assistant';
+    const think = m.reasoning ? `<details><summary>reasoning</summary>${md(m.reasoning)}</details>` : '';
+    items.push(`<div class="msg ${m.role}"><div class="who">${m.role === 'user' ? 'you' : esc(m.model || 'assistant')}${m.ms ? ` · ${(m.ms/1000).toFixed(1)} s` : ''}${m.tokens ? ` · ${m.tokens} tok` : ''}</div>${think}<div class="${last?'cursor':''}">${md(m.content)}</div></div>`);
+  });
+  box.innerHTML = items.join('') || `<div class="empty muted">Say something.</div>`;
+  box.scrollTop = box.scrollHeight;
+}
+
+// -------- models: everything loaded on every server the bridge watches
+async function loadModels() {
+  try {
+    const j = await (await fetch(location.origin + '/v1/all?names=llama', { cache: 'no-store' })).json();
+    const servers = j.results?.llama?.data?.servers || {};
+    models = [];
+    for (const [name, sv] of Object.entries(servers)) {
+      if (!sv.ok) continue;
+      for (const m of sv.models || []) {
+        if (sv.mode === 'router' && m.status?.value !== 'loaded') continue;
+        models.push({ server: name, id: m.id, label: `${m.id} · ${name}`, ctx: m.meta?.n_ctx });
+      }
+    }
+    const prev = $('model').value;
+    $('model').innerHTML = models.length ? models.map(m => `<option value="${esc(m.server)}/${esc(m.id)}">${esc(m.label)}${m.ctx ? ` (${(m.ctx/1024).toFixed(0)}k)` : ''}</option>`).join('') : '<option value="">no model loaded</option>';
+    if ([...$('model').options].some(o => o.value === prev)) $('model').value = prev; else if (conv()?.model && [...$('model').options].some(o => o.value === conv().model)) $('model').value = conv().model;
+    $('status').textContent = models.length ? `${models.length} loaded` : 'nothing loaded — use the Llama Dashboard';
+    $('send').disabled = !models.length;
+  } catch (e) { $('status').textContent = 'bridge?'; }
+}
+
+// -------- sending: stream SSE through the bridge
+async function send() {
+  const text = $('input').value.trim(); if (!text || ctl) return;
+  if (!conv()) newConv();
+  const c = conv(); const sel = $('model').value; if (!sel) return;
+  const [server, ...rest] = sel.split('/'); const model = rest.join('/');
+  c.model = sel; if (c.msgs.length === 0) c.title = text.slice(0, 40);
+  c.msgs.push({ role: 'user', content: text }); const reply = { role: 'assistant', content: '', reasoning: '', model }; c.msgs.push(reply);
+  $('input').value = ''; save(); renderConvs(); renderMsgs(true); $('err').textContent = '';
+  const messages = [...(c.system ? [{ role: 'system', content: c.system }] : []), ...c.msgs.slice(0, -1).map(m => ({ role: m.role, content: m.content }))];
+  ctl = new AbortController(); $('send').hidden = true; $('stop').hidden = false; const t0 = performance.now();
+  try {
+    const r = await fetch(`${location.origin}/v1/llama/${encodeURIComponent(server)}/chat`, { method: 'POST', signal: ctl.signal, cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages, stream: true, temperature: +$('temp').value, max_tokens: +$('maxtok').value }) });
+    if (!r.ok) { const j = await r.json().catch(() => null); throw new Error(j?.error?.message || `HTTP ${r.status}`); }
+    const rd = r.body.getReader(); const dec = new TextDecoder(); let buf = '', n = 0, last = 0;
+    for (;;) {
+      const { value, done } = await rd.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i; while ((i = buf.indexOf('\n\n')) >= 0) {
+        const ev = buf.slice(0, i); buf = buf.slice(i + 2);
+        for (const line of ev.split('\n')) {
+          if (!line.startsWith('data:')) continue; const d = line.slice(5).trim(); if (d === '[DONE]') continue;
+          try { const j = JSON.parse(d); const dl = j.choices?.[0]?.delta || {};
+            if (dl.content) { reply.content += dl.content; n++; } if (dl.reasoning_content) reply.reasoning += dl.reasoning_content;
+            if (j.usage?.completion_tokens) reply.tokens = j.usage.completion_tokens; if (j.error) throw new Error(j.error.message || 'model error'); } catch (e) { if (e.message !== 'Unexpected end of JSON input') throw e; }
+        }
+      }
+      if (performance.now() - last > 80) { renderMsgs(true); last = performance.now(); }
+    }
+    reply.tokens = reply.tokens || n;
+  } catch (e) {
+    if (e.name === 'AbortError') reply.content += reply.content ? '\n\n*(stopped)*' : '*(stopped)*'; else $('err').textContent = e.message;
+  } finally {
+    reply.ms = Math.round(performance.now() - t0); ctl = null; $('send').hidden = false; $('stop').hidden = true; save(); renderMsgs(false); renderConvs();
+  }
+}
+$('send').onclick = send; $('stop').onclick = () => ctl?.abort();
+$('input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+$('input').addEventListener('input', () => { const t = $('input'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 192) + 'px'; });
+$('sysBtn').onclick = () => { if (!conv()) newConv(); const v = prompt('System prompt for this conversation', conv().system || ''); if (v !== null) { conv().system = v; save(); renderMsgs(); } };
+$('model').onchange = () => { if (conv()) { conv().model = $('model').value; save(); } };
+renderConvs(); renderMsgs(); loadModels(); setInterval(loadModels, 5000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadModels(); });
+</script>

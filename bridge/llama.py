@@ -197,3 +197,68 @@ def load_unload(server: str, action: str, model: str) -> dict:
         msg = (body or {}).get("error", {}).get("message") if isinstance(body, dict) else None
         msg = msg or f"upstream HTTP {status}"
     return {"ok": ok, "server": server, "action": action, "model": model, "upstream_status": status, "error": msg}
+
+
+# ------------------------------------------------------------------ chat proxy
+CHAT_FIELDS = {"model", "messages", "temperature", "top_p", "max_tokens", "stream", "presence_penalty", "frequency_penalty", "stop"}
+CHAT_ROLES = {"system", "user", "assistant"}
+CHAT_MAX_MESSAGES = 400
+
+
+def chat_payload(body: dict) -> dict:
+    """Whitelist the client's chat request. Anything not listed is dropped, not forwarded."""
+    if not isinstance(body, dict):
+        raise LlamaError("body must be a JSON object")
+    model = body.get("model")
+    if not isinstance(model, str) or not (1 <= len(model) <= 128):
+        raise LlamaError("model must be a non-empty string")
+    msgs = body.get("messages")
+    if not isinstance(msgs, list) or not msgs or len(msgs) > CHAT_MAX_MESSAGES:
+        raise LlamaError(f"messages must be a non-empty list of at most {CHAT_MAX_MESSAGES}")
+    clean = []
+    for m in msgs:
+        if not isinstance(m, dict) or m.get("role") not in CHAT_ROLES or not isinstance(m.get("content"), str):
+            raise LlamaError("each message needs role (system|user|assistant) and string content")
+        clean.append({"role": m["role"], "content": m["content"]})
+    out = {"model": model, "messages": clean, "stream": bool(body.get("stream", True))}
+    for k in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
+        if k in body and isinstance(body[k], (int, float)):
+            out[k] = float(body[k])
+    if "max_tokens" in body and isinstance(body["max_tokens"], int) and 0 < body["max_tokens"] <= 65536:
+        out["max_tokens"] = body["max_tokens"]
+    if isinstance(body.get("stop"), list) and all(isinstance(x, str) for x in body["stop"]) and len(body["stop"]) <= 8:
+        out["stop"] = body["stop"]
+    return out
+
+
+def chat_open(server: str, payload: dict, timeout: float = 600.0):
+    """POST /v1/chat/completions upstream; returns (status, content_type, response-like object to stream from).
+
+    Only a model the server currently has LOADED is accepted, so a chat can
+    never trigger a load or an eviction. The caller streams ``resp`` and closes it.
+    """
+    if server not in SERVERS:
+        raise LlamaError(f"no llama server named {server!r}", 404)
+    url = SERVERS[server]
+    try:
+        m = _get(url + "/models", {"autoload": "false"})
+    except Exception as e:  # noqa: BLE001
+        raise LlamaError(f"{server} unreachable: {_err(e)}", 502)
+    data = [x for x in (m.get("data") or []) if isinstance(x, dict)] if isinstance(m, dict) else []
+    if infer_mode(m) == "router":
+        loaded = {x.get("id") for x in data if (x.get("status") or {}).get("value") == "loaded"}
+        if payload["model"] not in loaded:
+            raise LlamaError(f"{payload['model']!r} is not loaded on {server}; load it from the dashboard first (chat never loads models)", 409)
+    else:
+        ids = {x.get("id") for x in data} | {(x.get("aliases") or [None])[0] for x in data}
+        if data and payload["model"] not in ids:
+            raise LlamaError(f"{server} serves {sorted(i for i in ids if i)}, not {payload['model']!r}", 409)
+    req = urllib.request.Request(url + "/v1/chat/completions", data=json.dumps(payload).encode("utf-8"), method="POST",
+                                 headers={"Content-Type": "application/json", "Accept": "text/event-stream, application/json"})
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)  # noqa: S310
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Content-Type", "application/json"), e
+    except Exception as e:  # noqa: BLE001
+        raise LlamaError(f"{server}: {_err(e)}", 502)
+    return resp.status, resp.headers.get("Content-Type", "text/event-stream"), resp

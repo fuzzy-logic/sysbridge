@@ -99,6 +99,12 @@ Because every app shares the bridge's origin:
 | `router_models` | 30 s | `url, models[{id, status, model_path, size_bytes, shards, mmproj_path, mmproj_size_bytes, ctx_size}]` — on-disk sizes of llama-server router presets, split GGUFs summed |
 | `llama` | 2 s | `servers{name: {name, url, ok, mode: router|single|unknown, health, props, models[], error}}` — the llama-servers in `SYSBRIDGE_LLAMA_SERVERS`; `models[]` is the server's own `/models` `data[]` (router: `status.value`, `meta` when loaded) |
 | `llama_slots` | 1 s | `servers{name: {ok, models{label: {slots[], error}}}}` — `/slots` per loaded model; `slots[].is_processing` is the "generating now" signal |
+| `top` | 1.5 s | `uptime_s, load[3], tasks{total,running,threads}, cpu{cores[], busy_percent, nproc}, mem{total,used,available,…}, processes[{pid, ppid, user, state, threads, cpu, mem, rss, comm, cmd}]` (top 200 by CPU; `cpu` is instantaneous, 100 = one core) |
+
+Other endpoints apps use: `POST /v1/llama/<server>/chat` (OpenAI-style body,
+streams SSE back, **loaded models only**, no token — ChatBridge is the pattern);
+`GET /v1/store`, `POST /v1/store/<slug>/install` (token); `GET /v1/fs/…`
+(sensitive token; read-only; Web-File is the pattern).
 
 **Do not call llama-server from an app.** Read the `llama`/`llama_slots` probes
 and `POST /v1/llama/<server>/load|unload` `{"model", "confirm": true}` with the
@@ -208,8 +214,9 @@ These are what `bridge/llama.py` calls; an app never needs them directly.
 ## Checklist before you call it done
 
 - [ ] Has `<title>`, `<meta name="description">`, `<meta name="app-icon">`; installs from the launcher and appears as a tile
-- [ ] Works served from `/apps/<slug>/` **and** opened from `file://`; no console errors either way
-- [ ] All `localStorage` keys prefixed `app:<slug>:` except the shared `sysbridge.token`
+- [ ] Works at `http://<slug>.localhost/` **and** opened from `file://`; no console errors either way
+- [ ] Reads `sysbridge.token` at call time, not at load; never stores the sensitive token
+- [ ] `python -m unittest tests.test_store` passes with the file in `store/<slug>/`
 - [ ] Bridge stopped → system panel hidden, everything else still works
 - [ ] Model server stopped → its card turns unhealthy, page keeps polling and recovers
 - [ ] `stale` badge visible when a probe fails after having worked

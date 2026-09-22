@@ -1,0 +1,113 @@
+<!--
+  WTOP — htop in a browser tab. Read-only.
+  A sysbridge store app: one file, talks only to its own origin, reads the `top`
+  probe (per-core busy, per-process instantaneous CPU, RSS, user, state,
+  threads, command; tasks, load, uptime) once a second via GET /v1/all?names=top.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WTOP</title>
+<meta name="description" content="htop in a tab: per-core CPU, memory, uptime, and every process with instantaneous CPU and RSS. Read-only.">
+<meta name="app-icon" content="📊">
+<meta name="app-version" content="1.0">
+<meta name="app-author" content="sysbridge">
+<style>
+  :root { color-scheme: light dark; --bg:#f6f7f9; --fg:#1c1f24; --muted:#6b7280; --card:#fff; --line:#e3e6ea; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --accent:#2563eb; --bar:#e5e7eb;
+          font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; font-size: 13px; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --fg:#e5e7eb; --muted:#9aa3ad; --card:#171b21; --line:#262b33; --bar:#262b33; } }
+  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--fg); }
+  header { display:flex; align-items:center; gap:1rem; padding:.5rem 1rem; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; flex-wrap:wrap; }
+  header h1 { font-size:1rem; margin:0; font-weight:700; } .muted { color:var(--muted); } .right { margin-left:auto; display:flex; gap:.5rem; align-items:center; }
+  input, select, button { font:inherit; padding:.25rem .5rem; border:1px solid var(--line); border-radius:.4rem; background:var(--card); color:var(--fg); }
+  main { padding:.8rem 1rem; }
+  .summary { display:grid; grid-template-columns: 1fr 1fr; gap:.8rem 2rem; margin-bottom:.8rem; }
+  @media (max-width: 60rem) { .summary { grid-template-columns: 1fr; } }
+  .cores { display:grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap:.15rem .8rem; }
+  .core { display:grid; grid-template-columns: 2.2rem 1fr 3rem; gap:.4rem; align-items:center; font-size:.8rem; }
+  .bar { height:.75rem; background:var(--bar); border-radius:.2rem; overflow:hidden; position:relative; }
+  .bar i { position:absolute; left:0; top:0; bottom:0; background:var(--ok); }
+  .bar i.warn { background:var(--warn); } .bar i.bad { background:var(--bad); } .bar i.over { background:var(--accent); opacity:.8; }
+  .kv { display:grid; grid-template-columns: 5rem 1fr 9rem; gap:.3rem .6rem; align-items:center; font-size:.85rem; }
+  .kv b { font-weight:600; color:var(--muted); } .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .tablewrap { overflow:auto; max-height: calc(100vh - 16rem); border:1px solid var(--line); border-radius:.5rem; }
+  table { width:100%; border-collapse:collapse; font-size:.82rem; }
+  th, td { padding:.2rem .5rem; text-align:left; white-space:nowrap; border-bottom:1px solid var(--line); }
+  th { position:sticky; top:0; background:var(--card); cursor:pointer; user-select:none; color:var(--muted); font-weight:600; }
+  th.on { color:var(--accent); } td.cmd { max-width: 48rem; overflow:hidden; text-overflow:ellipsis; color:var(--muted); } td.comm { font-weight:600; }
+  tr.hot td { color:var(--fg); } tr.hot td.cpu { color:var(--bad); font-weight:600; } tr.me td { opacity:.7; }
+  .pill { display:inline-block; padding:0 .4rem; border-radius:1rem; font-size:.7rem; font-weight:700; color:#fff; background:var(--muted); } .pill.stale { background:var(--warn); }
+  .err { color:var(--bad); white-space:pre-wrap; } .err:empty { display:none; }
+</style>
+<header>
+  <h1>WTOP</h1>
+  <span class="muted" id="head">…</span>
+  <div class="right">
+    <input id="filter" placeholder="filter: name, user, pid" size="22">
+    <select id="user"><option value="">all users</option></select>
+    <label class="muted"><input type="checkbox" id="hideIdle"> hide idle</label>
+    <label class="muted"><input type="checkbox" id="pause"> pause</label>
+  </div>
+</header>
+<main>
+  <div class="err" id="err"></div>
+  <div class="summary">
+    <div class="cores" id="cores"></div>
+    <div class="kv" id="kv"></div>
+  </div>
+  <div class="tablewrap"><table id="tbl"><thead id="thead"></thead><tbody id="tbody"></tbody></table></div>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const GiB = 1024**3, MiB = 1024**2;
+const fmtB = n => n == null ? '—' : n >= GiB ? (n/GiB).toFixed(1)+'G' : n >= MiB ? (n/MiB).toFixed(0)+'M' : (n/1024).toFixed(0)+'K';
+const fmtUp = s => { if (s == null) return '—'; const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60); return (d ? d+'d ' : '') + String(h).padStart(2,'0')+':'+String(m).padStart(2,'0'); };
+const bar = (p, cls) => `<div class="bar"><i class="${p>85?'bad':p>50?'warn':cls||''}" style="width:${Math.min(100,p).toFixed(1)}%"></i></div>`;
+const STATE = { R:'running', S:'sleeping', D:'disk wait', Z:'zombie', T:'stopped', t:'traced', I:'idle', X:'dead' };
+const COLS = [['pid','PID','num'],['user','USER',''],['state','S',''],['threads','THR','num'],['cpu','CPU%','num'],['mem','MEM%','num'],['rss','RES','num'],['comm','NAME',''],['cmd','COMMAND','']];
+let sort = { key: 'cpu', dir: -1 }, data = null, stale = false;
+let LS; try { LS = JSON.parse(localStorage.getItem('wtop.settings') || '{}'); } catch (e) { LS = {}; }
+if (LS.sort) sort = LS.sort;
+const save = () => { try { localStorage.setItem('wtop.settings', JSON.stringify({ sort, hideIdle: $('hideIdle').checked })); } catch (e) {} };
+$('hideIdle').checked = !!LS.hideIdle;
+
+async function poll() {
+  if ($('pause').checked) return;
+  try {
+    const r = await fetch(location.origin + '/v1/all?names=top', { cache: 'no-store' });
+    const j = await r.json(); const env = j.results?.top;
+    if (!env?.data) throw new Error(env?.error?.message || 'no data');
+    data = env.data; stale = !!env.stale; $('err').textContent = '';
+  } catch (e) { $('err').textContent = `bridge: ${e.message}`; stale = true; }
+  render();
+}
+function render() {
+  if (!data) return;
+  const c = data.cpu, m = data.mem, t = data.tasks;
+  $('head').innerHTML = `up ${fmtUp(data.uptime_s)} · load ${data.load.map(x => x.toFixed(2)).join(' ')} · ${t.total} tasks, ${t.threads} thr, ${t.running} running${stale ? ' <span class="pill stale">stale</span>' : ''}`;
+  $('cores').innerHTML = c.cores.map((p, i) => `<div class="core"><span class="muted">${i}</span>${bar(p)}<span class="num">${p.toFixed(0)}%</span></div>`).join('');
+  const memP = 100 * m.used / (m.total || 1), swP = m.swap_total ? 100 * m.swap_used / m.swap_total : 0;
+  $('kv').innerHTML = `<b>CPU</b>${bar(c.busy_percent || 0)}<span class="num">${(c.busy_percent||0).toFixed(1)}% of ${c.nproc}</span>` +
+    `<b>Mem</b>${bar(memP, '')}<span class="num">${fmtB(m.used)} / ${fmtB(m.total)}</span>` +
+    `<b>Swp</b>${bar(swP)}<span class="num">${fmtB(m.swap_used)} / ${fmtB(m.swap_total)}</span>` +
+    `<b>cache</b><span class="muted" style="grid-column: span 2">${fmtB(m.cached)} cached · ${fmtB(m.buffers)} buffers · ${fmtB(m.shmem)} shmem · ${fmtB(m.available)} available</span>`;
+  // users select
+  const users = [...new Set(data.processes.map(p => p.user))].sort();
+  const cur = $('user').value;
+  if ($('user').options.length !== users.length + 1) $('user').innerHTML = '<option value="">all users</option>' + users.map(u => `<option ${u===cur?'selected':''}>${esc(u)}</option>`).join('');
+  const f = $('filter').value.trim().toLowerCase(), u = $('user').value, hide = $('hideIdle').checked;
+  let rows = data.processes.filter(p => (!u || p.user === u) && (!hide || p.cpu > 0 || p.state === 'R') &&
+    (!f || p.comm.toLowerCase().includes(f) || p.user.toLowerCase().includes(f) || String(p.pid) === f || p.cmd.toLowerCase().includes(f)));
+  rows.sort((a, b) => { const x = a[sort.key], y = b[sort.key]; return (typeof x === 'string' ? x.localeCompare(y) : x - y) * sort.dir; });
+  $('thead').innerHTML = '<tr>' + COLS.map(([k, l, cls]) => `<th class="${cls} ${sort.key===k?'on':''}" data-k="${k}">${l}${sort.key===k?(sort.dir<0?' ▼':' ▲'):''}</th>`).join('') + '</tr>';
+  $('tbody').innerHTML = rows.map(p => `<tr class="${p.cpu >= 5 ? 'hot' : ''}"><td class="num">${p.pid}</td><td>${esc(p.user)}</td><td title="${STATE[p.state]||p.state}">${esc(p.state)}</td><td class="num">${p.threads}</td>` +
+    `<td class="num cpu">${p.cpu.toFixed(1)}</td><td class="num">${p.mem.toFixed(1)}</td><td class="num">${fmtB(p.rss)}</td><td class="comm">${esc(p.comm)}</td><td class="cmd" title="${esc(p.cmd)}">${esc(p.cmd)}</td></tr>`).join('') +
+    (data.truncated ? `<tr><td colspan="9" class="muted">showing the top ${data.processes.length} by CPU — the bridge trims the rest</td></tr>` : '');
+}
+$('thead').addEventListener('click', e => { const th = e.target.closest('th[data-k]'); if (!th) return; const k = th.dataset.k;
+  if (sort.key === k) sort.dir = -sort.dir; else sort = { key: k, dir: ['user','state','comm','cmd'].includes(k) ? 1 : -1 }; save(); render(); });
+for (const id of ['filter', 'user', 'hideIdle']) $(id).addEventListener('input', () => { save(); render(); });
+setInterval(poll, 1000); poll();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+</script>

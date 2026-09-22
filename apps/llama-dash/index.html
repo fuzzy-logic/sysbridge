@@ -172,6 +172,7 @@ function saveSettings(s) {
   try { const { token, ...rest } = s; localStorage.setItem(LS_KEY, JSON.stringify(rest)); localStorage.setItem(TOKEN_KEY, token || ''); } catch (e) {}
 }
 const trim = u => (u || '').trim().replace(/\/+$/, '');
+const tokenNow = () => { try { return localStorage.getItem(TOKEN_KEY) || S.token || ''; } catch (e) { return S.token || ''; } };
 
 // ---------------------------------------------------------------- helpers
 const $ = id => document.getElementById(id);
@@ -313,7 +314,7 @@ async function confirmAction(act, id) {
     body = `<div class="consequence">Unloading <b>${esc(id)}</b> frees its ${fmtBytes(m.meta?.size)} of GPU memory. ` +
       `Any client that names it will trigger a cold reload on its next request (30–120 s). The preset stays in the router; nothing is removed.</div>`;
   }
-  if (!S.token) body += `<div class="err">The bridge needs your token for this. Paste it in Settings (python -m bridge --token).</div>`;
+  if (!tokenNow()) body += `<div class="err">The bridge needs your token for this. Open this app from the launcher (it hands the token over) or paste it in Settings.</div>`;
   $('confirmTitle').textContent = title; $('confirmBody').innerHTML = body;
   $('confirmYes').textContent = act === 'load' ? 'Load' : 'Unload';
   const dlg = $('confirmDlg');
@@ -328,7 +329,9 @@ async function confirmAction(act, id) {
   try {
     const r = await getJSON(`${trim(S.bridge)}/v1/llama/${encodeURIComponent(rt.name)}/${act}`, {
       method: 'POST', timeout: 30000,
-      headers: { 'Content-Type': 'application/json', 'X-Bridge-Token': S.token || '' },
+      // read the token at call time: the launcher's handoff is stored by the bridge's injected script,
+      // which runs after this page's own script on the first visit
+      headers: { 'Content-Type': 'application/json', 'X-Bridge-Token': tokenNow() },
       body: JSON.stringify({ model: id, confirm: true }),
     });
     if (r?.ok !== true) throw new Error(r?.error || 'the router did not report success');

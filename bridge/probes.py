@@ -15,7 +15,7 @@ import time
 import urllib.request
 from typing import Optional
 
-from . import llama, parsers
+from . import llama, parsers, top as _top
 from .registry import Registry
 from .util import first_amdgpu_card, hwmon_by_name, read_int, read_sysfs, read_text, run
 
@@ -304,3 +304,5 @@ def _int_or_none(s: Optional[str]) -> Optional[int]:
 
 # llama-server upstreams as probes (llama, llama_slots) — see llama.py
 llama.register(REG)
+# htop's view of the machine — see top.py
+_top.register(REG)
