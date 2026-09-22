@@ -552,6 +552,16 @@ token by default (or the sensitive one); `--fs-strict` /
 back to prompting when it gets a 401. The sensitive token is otherwise
 unused and is still never injected or served.
 
+### Addendum 2026-09-22 — the home tab and bridge settings
+
+The home button became a **tab half off-screen at a screen edge** (rounded
+110×30 px, vertical on left/right), showing ⌂; hover/focus slides it in and
+unfolds the menu; tap pins. Edge = bridge setting `home_position`
+(top|left|bottom|right, default top), read per response so it applies on the
+next page load. New `bridge/settings.py` (whitelisted keys/values, JSON in
+`<state>/settings.json`, env/flag = defaults), `GET/PUT /v1/settings` (PUT:
+token), a select in the launcher's Settings. 97 tests.
+
 ## Phase 4 — per-app command permissions (idea, not scheduled)
 
 Now feasible: per-app origins give the bridge a browser-enforced caller identity (the `Origin` header). An app declares the CLI commands it wants (in its manifest / a meta tag); the

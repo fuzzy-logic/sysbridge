@@ -112,10 +112,14 @@ Conventions, no configuration:
 | replace | upload a page with the same title; the old copy moves to `.trash/` |
 | uninstall | from the tile's ⋯ menu; also moves to `.trash/`, never deletes |
 
-Every app page gets a small floating **⌂ home button** (bottom-left) added by
-the bridge as it serves the file, so any upload has a way back to the launcher
-with no code of its own. Apps that draw their own can opt out with
-`<meta name="sysbridge-home" content="none">`.
+Every app page gets a **home tab** added by the bridge as it serves the file:
+a rounded tab that sits half off-screen, centred on one edge, showing ⌂. Hover
+or focus slides it in and unfolds a menu — the launcher, the other installed
+apps, token state; a tap pins it for touch. Which edge is a bridge setting,
+**top** by default, changed in the launcher's Settings (`PUT /v1/settings`,
+stored in `~/.local/state/sysbridge/settings.json`) or given a default with
+`--home-position` / `SYSBRIDGE_HOME_POSITION`. Apps that draw their own can opt
+out with `<meta name="sysbridge-home" content="none">`.
 
 **Link tiles** are the one thing that leaves port 80 on purpose: they open any
 URL — the router's own web UI on :8080, say — so the launcher also covers UIs
@@ -189,6 +193,7 @@ header, responses capped at 1 MiB.
 | POST | `/llama/{server}/chat` | OpenAI-style `{model, messages, temperature, top_p, max_tokens, stream}` streamed through; **loaded models only**; fields whitelisted; no token; ≤ 4 concurrent |
 | GET | `/store` · `/store/{slug}` | catalogue with `installed`, `update_available`, `problems` |
 | POST | `/store/{slug}/install` | token; refuses entries with `problems` |
+| GET / PUT | `/settings` | bridge-wide settings; PUT needs the token; keys and values whitelisted (`home_position`: top/left/bottom/right) |
 | GET | `/fs/roots` · `/fs/ls?path=` · `/fs/stat?path=` · `/fs/read?path=` · `/fs/download?path=` | token (or the sensitive one; only that with `--fs-strict`); read-only; paths must resolve inside a configured root |
 
 Outside `/v1`: on `localhost` `/` is the launcher and `/apps/<slug>/…` an app;
@@ -261,7 +266,7 @@ dashboard uses (including `?autoload=false`), and a done-checklist.
 
 ```bash
 ./install.sh --dry-run                # what the installer would do on this machine
-python -m unittest discover tests     # 85 tests: parsers, registry, apps, store catalogue (the PR check), top, fs, llama upstreams (fake server), CORS/tokens/per-app origins over a socket
+python -m unittest discover tests     # 97 tests: parsers, registry, apps, store catalogue (the PR check), top, fs, llama upstreams (fake server), CORS/tokens/per-app origins over a socket
 python -m bridge --once rocm_pids     # any probe, as JSON, exit 1 on error
 python -m bridge --list
 python -m bridge --port 8182          # launcher at http://localhost:8182/ without the port-80 sysctl
@@ -280,7 +285,8 @@ bridge/
   llama.py      llama-server upstreams as probes (llama, llama_slots) + load/unload + streaming chat proxy
   top.py        the `top` probe: instantaneous per-process CPU from /proc deltas
   store.py      the store catalogue, validate() (the PR check), install
-  fs.py         read-only filesystem under configured roots (sensitive token)
+  fs.py         read-only filesystem under configured roots
+  settings.py   bridge-wide settings with whitelisted keys/values (home tab position)
   apps.py       installed apps: manifests from <title>/<meta>, install/replace/uninstall to .trash, traversal-safe resolve
   www/launcher.html   the home screen at /
   registry.py   @probe registry, per-probe TTL cache + lock, async refresh, error isolation

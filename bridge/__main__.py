@@ -39,6 +39,8 @@ def main(argv=None) -> int:
                     help="do not write the ordinary token into served pages' localStorage; users paste it in the launcher instead")
     ap.add_argument("--fs-strict", action="store_true",
                     help="filesystem API accepts only the separate token-sensitive (never injected into pages); Web-File then prompts for it")
+    ap.add_argument("--home-position", default=os.environ.get("SYSBRIDGE_HOME_POSITION", "top"), choices=["top", "left", "bottom", "right"],
+                    help="default edge for the slide-out home tab in apps; the launcher's Settings can change it at runtime")
     ap.add_argument("--apps-root", default=None, help="where uploaded apps live (default $STATE_DIRECTORY/apps or ~/.local/state/sysbridge/apps)")
     ap.add_argument("--once", metavar="NAME", help="run one probe, print its envelope as JSON, exit 0/1")
     ap.add_argument("--list", action="store_true", help="list probes and exit")
@@ -62,7 +64,7 @@ def main(argv=None) -> int:
 
     cfg = Config(bind=a.bind, port=a.port, extra_origins=list(a.origins), actions_file=a.actions_file, apps_root=a.apps_root,
                  inject_token=not (a.no_token_inject or os.environ.get("SYSBRIDGE_TOKEN_INJECT", "1") == "0"),
-                 fs_strict=a.fs_strict or os.environ.get("SYSBRIDGE_FS_STRICT", "0") == "1")
+                 fs_strict=a.fs_strict or os.environ.get("SYSBRIDGE_FS_STRICT", "0") == "1", home_position=a.home_position)
     try:
         serve(cfg)
     except KeyboardInterrupt:

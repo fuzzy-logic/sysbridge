@@ -28,7 +28,7 @@ class ServerFixture:
                      actions_file=self.actions_path, token_file=self.token_file,
                      sensitive_token_file=os.path.join(self.tmp.name, "rt", "token-sensitive"),
                      apps_root=self.apps_root, builtins={"dash": self.builtin_dir},
-                     fs_roots=[self.tmp.name])
+                     fs_roots=[self.tmp.name], settings_file=os.path.join(self.tmp.name, "settings.json"))
         self.srv = Bridge(cfg)
         self.port = self.srv.server_address[1]
         self.thread = threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
@@ -281,6 +281,25 @@ class PerAppOriginTests(unittest.TestCase):
         # content-length matches the modified body
         st, h, data = self.fx.raw("GET", "/", browser)
         self.assertEqual(int(h["content-length"]), len(data))
+
+    def test_home_position_setting(self):
+        H = {"X-Bridge-Token": self.fx.srv.token, "Origin": "null", "Content-Type": "application/json"}
+        st, _, b = self.fx.request("GET", "/v1/settings", {"Origin": "null"})
+        self.assertEqual(st, 200)
+        self.assertEqual(b["settings"]["home_position"], "top")
+        self.assertIn("home_position", b["allowed"])
+        self.assertIn(b'"top"', self.fx.raw("GET", "/", {"Host": "dash.localhost"})[2])
+        st, _, _ = self.fx.request("PUT", "/v1/settings", {"Origin": "null", "Content-Type": "application/json"}, b'{"home_position":"left"}')
+        self.assertEqual(st, 401)
+        st, _, b = self.fx.request("PUT", "/v1/settings", H, b'{"home_position":"diagonal"}')
+        self.assertEqual(st, 400)
+        st, _, b = self.fx.request("PUT", "/v1/settings", H, b'{"home_position":"left"}')
+        self.assertEqual(st, 200)
+        self.assertEqual(b["settings"]["home_position"], "left")
+        data = self.fx.raw("GET", "/", {"Host": "dash.localhost"})[2]
+        self.assertIn(b'POS="left"', data)
+        self.assertNotIn(b'POS="top"', data)
+        self.fx.request("PUT", "/v1/settings", H, b'{"home_position":"top"}')
 
     def test_token_injection_can_be_disabled(self):
         self.fx.srv.cfg.inject_token = False

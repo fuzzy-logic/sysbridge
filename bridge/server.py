@@ -55,6 +55,7 @@ from .apps import Apps, AppsError, MAX_APP_BYTES, content_type_for, repo_builtin
 from . import llama
 from .store import Store
 from .fs import Fs, FsError
+from .settings import Settings, SettingsError
 from .probes import REG
 from .registry import error_envelope, valid_name
 from .util import xdg_runtime_dir
@@ -83,6 +84,8 @@ class Config:
     fs_config: Optional[str] = None            # default: ~/.config/sysbridge/fs.json
     inject_token: bool = True                  # write the ordinary token into localStorage of served pages
     fs_strict: bool = False                    # True: /v1/fs needs the separate token-sensitive (never injected)
+    home_position: str = "top"                 # default for the home tab: top | left | bottom | right (settings file wins)
+    settings_file: Optional[str] = None        # default: <apps root>/../settings.json
     fs_roots: Optional[list] = None            # test override
     builtins: Optional[dict] = None            # default: apps/<slug>/index.html in the repo
 
@@ -93,25 +96,36 @@ MAX_CHAT_BODY = 1 << 20
 MAX_CHATS = 4
 
 # Appended to every HTML page served for an app (its own host or /apps/<slug>/)
-# so any uploaded app, with no code of its own, gets a way back: a small round
-# button fixed bottom-left that unfolds into a menu — launcher, the other
-# installed apps, token state. It lives in a closed shadow root so the app's
-# CSS cannot restyle it and it cannot restyle the app. The launcher URL is
-# absolute (per-app origins would otherwise make "/" point at the app itself).
-# Appending after </html> is valid: browsers parse trailing content into <body>.
-# An app opts out with <meta name="sysbridge-home" content="none">.
+# so any uploaded app, with no code of its own, gets a way back. It is a tab
+# that sits half off-screen, centred on one edge (setting `home_position`),
+# showing the ⌂ glyph; hover or focus slides it fully in and unfolds the menu
+# (launcher, the other installed apps, token state). A tap pins it for touch
+# screens. Closed shadow root: the app's CSS cannot restyle it and it cannot
+# restyle the app. The launcher URL is absolute (per-app origins would make
+# "/" point at the app). Appending after </html> is valid: browsers parse
+# trailing content into <body>. Opt out: <meta name="sysbridge-home" content="none">.
 _HOME_TEMPLATE = r"""
 <script data-sysbridge-home>(function(){
-var L=__LAUNCHER__;
+var L=__LAUNCHER__,POS=__POS__;
 if(document.querySelector('meta[name="sysbridge-home"][content="none"]'))return;
 var h=document.createElement('sysbridge-home');var r=h.attachShadow({mode:'closed'});
+var V=(POS==='left'||POS==='right');
 r.innerHTML='<style>'+
 ':host{all:initial}'+
-'.b{position:fixed;left:12px;bottom:12px;z-index:2147483647;width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:rgba(28,31,36,.82);color:#fff;text-decoration:none;font:20px/1 system-ui,sans-serif;box-shadow:0 1px 5px rgba(0,0,0,.45);opacity:.65;cursor:pointer;border:0;transition:opacity .15s}.b:hover,.b:focus,.b.on{opacity:1}'+
-'.p{position:fixed;left:12px;bottom:56px;z-index:2147483647;min-width:220px;max-width:320px;max-height:70vh;overflow:auto;background:#171b21;color:#e5e7eb;border:1px solid #2a2f37;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.5);font:13px/1.4 system-ui,sans-serif;padding:6px;display:none}.p.on{display:block}'+
+'.w{position:fixed;z-index:2147483647;font:13px/1.4 system-ui,sans-serif;color:#e5e7eb;display:flex;align-items:center;'+(V?'flex-direction:row;':'flex-direction:column;')+'transition:transform .18s ease-out}'+
+'.w.top{top:0;left:50%;transform:translate(-50%,-16px)}.w.top:hover,.w.top:focus-within,.w.top.pin{transform:translate(-50%,0)}'+
+'.w.bottom{bottom:0;left:50%;flex-direction:column-reverse;transform:translate(-50%,16px)}.w.bottom:hover,.w.bottom:focus-within,.w.bottom.pin{transform:translate(-50%,0)}'+
+'.w.left{left:0;top:50%;transform:translate(-16px,-50%)}.w.left:hover,.w.left:focus-within,.w.left.pin{transform:translate(0,-50%)}'+
+'.w.right{right:0;top:50%;flex-direction:row-reverse;transform:translate(16px,-50%)}.w.right:hover,.w.right:focus-within,.w.right.pin{transform:translate(0,-50%)}'+
+'.h{display:flex;align-items:center;justify-content:center;gap:6px;background:rgba(28,31,36,.9);box-shadow:0 1px 6px rgba(0,0,0,.45);cursor:pointer;user-select:none;border:0;color:inherit;font:inherit;padding:0}'+
+(V?'.h{width:30px;height:110px;flex-direction:column}':'.h{height:30px;width:110px}')+
+'.top .h{border-radius:0 0 12px 12px}.bottom .h{border-radius:12px 12px 0 0}.left .h{border-radius:0 12px 12px 0}.right .h{border-radius:12px 0 0 12px}'+
+'.h .g{font-size:17px;line-height:1}.h .l{font-size:11px;letter-spacing:.04em;opacity:0;transition:opacity .15s;'+(V?'writing-mode:vertical-rl;':'')+'}.w:hover .l,.w:focus-within .l,.w.pin .l{opacity:.85}'+
+'.p{display:none;background:#171b21;border:1px solid #2a2f37;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.5);padding:6px;min-width:220px;max-width:320px;max-height:70vh;overflow:auto;margin:'+(POS==='top'?'6px 0 0':POS==='bottom'?'0 0 6px':POS==='left'?'0 0 0 6px':'0 6px 0 0')+'}'+
+'.w:hover .p,.w:focus-within .p,.w.pin .p{display:block}'+
 '.p a,.p div.t{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;color:inherit;text-decoration:none}.p a:hover{background:#242932}.p .i{width:22px;text-align:center}.p .t{color:#9aa3ad;font-size:11px;padding-top:4px}.p .cur{font-weight:600}.p hr{border:0;border-top:1px solid #2a2f37;margin:4px 0}'+
-'</style><button class="b" title="sysbridge">\u2302</button><div class="p" role="menu"></div>';
-var b=r.querySelector('.b'),p=r.querySelector('.p');
+'</style><div class="w '+POS+'"><button class="h" title="sysbridge" aria-label="sysbridge home"><span class="g">\u2302</span><span class="l">sysbridge</span></button><div class="p" role="menu"></div></div>';
+var w=r.querySelector('.w'),b=r.querySelector('.h'),p=r.querySelector('.p'),loaded=false;
 function tok(){try{return localStorage.getItem('sysbridge.token')||''}catch(e){return''}}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function port(){var m=L.match(/:(\d+)\/$/);return m?':'+m[1]:''}
@@ -119,10 +133,12 @@ function appUrl(a){return a.kind==='link'?a.url:'http://'+a.slug+'.localhost'+po
 function build(apps){var me=location.hostname.replace(/\.localhost$/,'');var cur=(location.pathname.match(/^\/apps\/([a-z0-9-]+)/)||[])[1]||me;
 var html='<div class="t">sysbridge</div><a href="'+esc(L)+'"><span class="i">\u2302</span>All apps</a><hr>';
 apps.forEach(function(a){html+='<a href="'+esc(appUrl(a))+'"'+(a.kind==='link'?' target="_blank" rel="noopener"':'')+' class="'+(a.slug===cur?'cur':'')+'"><span class="i">'+esc(a.icon)+'</span>'+esc(a.title)+(a.kind==='link'?' \u2197':'')+'</a>'});
-html+='<hr><div class="t">'+(tok()?'token present':'no token \u2014 paste it in the launcher')+'</div>';p.innerHTML=html}
-function toggle(){var on=!p.classList.contains('on');p.classList.toggle('on',on);b.classList.toggle('on',on);if(on){p.innerHTML='<div class="t">loading\u2026</div>';fetch('/v1/apps',{cache:'no-store'}).then(function(x){return x.json()}).then(build).catch(function(){p.innerHTML='<a href="'+esc(L)+'"><span class="i">\u2302</span>All apps</a>'})}}
-b.addEventListener('click',toggle);document.addEventListener('keydown',function(e){if(e.key==='Escape'&&p.classList.contains('on'))toggle()});
-document.addEventListener('click',function(e){if(p.classList.contains('on')&&e.target!==h)toggle()},true);
+html+='<hr><div class="t">'+(tok()?'token present':'no token \u2014 the bridge runs with --no-token-inject; paste it in the launcher')+'</div>';p.innerHTML=html;loaded=true}
+function load(){if(loaded)return;p.innerHTML='<div class="t">loading\u2026</div>';fetch('/v1/apps',{cache:'no-store'}).then(function(x){return x.json()}).then(build).catch(function(){p.innerHTML='<a href="'+esc(L)+'"><span class="i">\u2302</span>All apps</a>'})}
+w.addEventListener('mouseenter',load);w.addEventListener('focusin',load);
+b.addEventListener('click',function(){load();w.classList.toggle('pin')});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')w.classList.remove('pin')});
+document.addEventListener('click',function(e){if(e.target!==h)w.classList.remove('pin')},true);
 document.documentElement.appendChild(h);})();</script>
 """
 _home_cache: dict = {}
@@ -142,11 +158,12 @@ def with_token(data: bytes, token: str) -> bytes:
     return tag + data
 
 
-def home_button(launcher_url: str) -> bytes:
-    b = _home_cache.get(launcher_url)
+def home_button(launcher_url: str, position: str = "top") -> bytes:
+    key = (launcher_url, position)
+    b = _home_cache.get(key)
     if b is None:
-        b = _HOME_TEMPLATE.replace("__LAUNCHER__", json.dumps(launcher_url)).encode("utf-8")
-        _home_cache[launcher_url] = b
+        b = _HOME_TEMPLATE.replace("__LAUNCHER__", json.dumps(launcher_url)).replace("__POS__", json.dumps(position)).encode("utf-8")
+        _home_cache[key] = b
     return b
 
 
@@ -188,6 +205,8 @@ class Bridge(ThreadingHTTPServer):
         self.apps = Apps(cfg.apps_root, cfg.builtins if cfg.builtins is not None else repo_builtins())
         self.store = Store(cfg.store_root)
         self.fs = Fs(cfg.fs_config, roots=cfg.fs_roots)
+        self.settings = Settings(cfg.settings_file or os.path.join(os.path.dirname(self.apps.root.rstrip("/")), "settings.json"),
+                                 defaults={"home_position": cfg.home_position})
         self.token = ensure_token(cfg.token_file or token_path())
         self.sensitive_token = ensure_token(cfg.sensitive_token_file or sensitive_token_path())
         self.sem = threading.BoundedSemaphore(MAX_CONCURRENCY)
@@ -297,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {"ok": False, "error": {"type": "TooLarge", "message": "file too large to serve"}}, origin)
         if content_type_for(path).startswith("text/html"):
             if inject_home:
-                data += home_button(self._launcher_url())
+                data += home_button(self._launcher_url(), self.server.settings.get("home_position"))
             if self.server.cfg.inject_token and self._is_document_request():
                 data = with_token(data, self.server.token)
         self.send_response(200)
@@ -361,7 +380,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._forbidden()
         self.send_response(204)
         self._cors(origin)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Bridge-Token, X-Bridge-Sensitive-Token, X-Filename")
         self.send_header("Access-Control-Max-Age", "600")
         self.send_header("Content-Length", "0")
@@ -419,6 +438,8 @@ class Handler(BaseHTTPRequestHandler):
             what = parts[1]
             if what == "apps" and len(parts) == 2:
                 return self._send(200, self.server.apps.list(), origin)
+            if what == "settings" and len(parts) == 2:
+                return self._send(200, {"ok": True, "settings": self.server.settings.all(), "allowed": {k: list(v) for k, v in __import__("bridge.settings", fromlist=["ALLOWED"]).ALLOWED.items()}}, origin)
             if what == "fs" and len(parts) == 3:
                 return self._get_fs(parts[2], q, origin)
             if what == "store" and len(parts) == 2:
@@ -641,6 +662,23 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             with self.server.stream_lock:
                 self.server.chat_clients -= 1
+
+    def do_PUT(self) -> None:
+        origin = self._origin()
+        raw = self._drain_body()
+        if not self.server.origin_allowed(origin):
+            return self._forbidden()
+        parts = [p for p in urlsplit(self.path).path.split("/") if p]
+        if parts != ["v1", "settings"]:
+            return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "PUT only /v1/settings"}}, origin)
+        if not self._token_ok():
+            return self._send(401, {"ok": False, "error": {"type": "Unauthorized", "message": "missing or wrong X-Bridge-Token"}}, origin)
+        try:
+            new = self.server.settings.update(self._parse_json(raw or b""))
+        except (ValueError, SettingsError) as e:
+            return self._send(400, {"ok": False, "error": {"type": "BadRequest", "message": str(e)}}, origin)
+        print(f"sysbridge: settings updated {new} origin={origin or '-'}", file=sys.stderr, flush=True)
+        return self._send(200, {"ok": True, "settings": new}, origin)
 
     def do_DELETE(self) -> None:
         origin = self._origin()

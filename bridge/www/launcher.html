@@ -129,6 +129,10 @@
   <dl id="sInfo"></dl>
   <label>Bridge token — needed to install or uninstall apps, run actions, load/unload models. The bridge writes it into every app's storage as it serves the page; you only paste it here if the bridge runs with <code>--no-token-inject</code>.</label>
   <input id="sToken" autocomplete="off" spellcheck="false">
+  <label>Home tab — the slide-out ⌂ tab the bridge adds to every app. Which screen edge it peeks in from:</label>
+  <select id="sPos"><option value="top">top (centre)</option><option value="left">left (centre)</option><option value="bottom">bottom (centre)</option><option value="right">right (centre)</option></select>
+  <div class="muted" style="font-size:.8rem;margin-top:.3rem">Saved on the bridge (<code>PUT /v1/settings</code>), so it applies to every app on the next page load.</div>
+  <div class="err" id="sErr"></div>
   <div class="muted" style="font-size:.8rem;margin-top:.3rem"><code>python -m bridge --token</code> prints it (and the separate <b>sensitive</b> token for the file browser, which is never injected anywhere).</div>
   <div class="actions"><button type="button" id="sClose">Close</button><button type="button" class="primary" id="sSave">Save</button></div>
 </dialog>
@@ -289,8 +293,10 @@ $('addGo').onclick = async () => {
 };
 
 // ---------------------------------------------------------------- settings
+let settingsNow = null;
 async function openSettings() {
-  $('sToken').value = token();
+  $('sToken').value = token(); $('sErr').textContent = '';
+  try { settingsNow = (await api('GET', '/v1/settings')).settings; $('sPos').value = settingsNow.home_position; } catch (e) { settingsNow = null; }
   let info = [];
   try { const h = await api('GET', '/v1/health'); info = [['bridge', `${esc(h.version)} · up ${Math.round(h.uptime_s / 60)} min`], ['origin', esc(location.origin)], ['probes', esc(h.probes.join(', '))], ['actions', h.actions_enabled ? 'enabled' : 'disabled (no ~/.config/sysbridge/actions.json)']]; }
   catch (e) { info = [['bridge', `<span class="err">${esc(e.message)}</span>`]]; }
@@ -298,7 +304,14 @@ async function openSettings() {
   if (!$('settingsDlg').open) $('settingsDlg').showModal();
 }
 $('settingsBtn').onclick = openSettings; $('sClose').onclick = () => $('settingsDlg').close();
-$('sSave').onclick = () => { try { localStorage.setItem(TOKEN_KEY, $('sToken').value.trim()); } catch (e) {} $('settingsDlg').close(); };
+$('sSave').onclick = async () => {
+  try { localStorage.setItem(TOKEN_KEY, $('sToken').value.trim()); } catch (e) {}
+  if (settingsNow && $('sPos').value !== settingsNow.home_position) {
+    try { await api('PUT', '/v1/settings', { body: JSON.stringify({ home_position: $('sPos').value }), headers: { ...authed(), 'Content-Type': 'application/json' } }); }
+    catch (e) { $('sErr').textContent = describe(e); return; }
+  }
+  $('settingsDlg').close();
+};
 
 refresh();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
