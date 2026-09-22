@@ -1,7 +1,7 @@
 """One decorated function per data point. Each returns plain JSON data.
 
 Sources and their quirks were measured on a unified-memory AMD APU with
-ROCm; see HANDOVER.md. Every
+ROCm; see README → "Why the design looks like this". Every
 probe degrades to an error envelope rather than guessing when a source is
 missing, so the same code runs on a machine with no GPU at all.
 """

@@ -1,6 +1,6 @@
 """HTTP server: routing, CORS, SSE, token check. Stdlib ThreadingHTTPServer.
 
-Security model (see HANDOVER.md → "Security model"):
+Security model (see README → "Security model"):
 
 * Origin allowlist on every request: exact ``null`` (a file:// page),
   ``^http://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:\\d+)?$`` and the per-app origins
