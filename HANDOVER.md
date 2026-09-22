@@ -427,7 +427,7 @@ replace/trash/uninstall, traversal, links). (2) Static serving. (3) `/v1/apps`.
 (4) Launcher page `bridge/www/launcher.html`: grid, upload (picker + drag-drop,
 preview parsed title before install), add-link, per-app settings view
 (manifest, uninstall). (5) llama-dash: title "Llama Dashboard", `app-icon`
-meta, same-origin default, shared token key, `app:llama-dash:` prefix.
+meta, same-origin default, shared token key, `app:llama-dashboard:` prefix.
 (6) Skill, README, unit (`StateDirectory`, port 80, sysctl note). (7) Browser
 verification incl. remote-origin 403 on upload.
 
@@ -439,7 +439,7 @@ instance on :8182: pasted the token in Settings, uploaded a 720-byte test app
 `/apps/hello-bridge/` where it saw `location.origin` as the bridge and the
 shared token, added a "Router UI" link tile (302 to :8080), uninstalled the
 test app (landed in `apps/.trash/hello-bridge-<ts>/`), and opened the built-in
-Llama Dashboard at `/apps/llama-dash/` with its System panel live and the ⌂
+Llama Dashboard at `/apps/llama-dashboard/` with its System panel live and the ⌂
 link shown. curl: remote-origin upload → 403, traversal → 404.
 
 Two bugs found by tests on the way: `re.findall` returns `''` not `None` for
@@ -460,7 +460,7 @@ bottom-left) so uploaded apps need no code for it; opt out with
 are not touched. The dashboard's own link was removed in favour of it.
 
 Clarification recorded because it caused confusion: **everything is on port
-80.** Launcher `/`, the built-in dashboard `/apps/llama-dash/`, every upload
+80.** Launcher `/`, the built-in dashboard `/apps/llama-dashboard/`, every upload
 `/apps/<slug>/`, the API `/v1/…`. The `:8080` / `:8127` shown *inside* the
 dashboard are the llama-servers it monitors, not where it is served. The only
 thing that leaves port 80 is a **link tile**, whose whole job is to open
@@ -526,7 +526,7 @@ Web-File rooted at the home directory.
   idle timeout, logged.
 
 Verified in the browser on the live service: token handoff into
-`llama-dash.localhost` with the hash stripped; home menu listing apps; App
+`llama-dashboard.localhost` with the hash stripped; home menu listing apps; App
 Store installing all three via its UI; WTOP live (32 cores, 700 tasks);
 ChatBridge streamed "pong" from the loaded router model in 206 ms; Web-File
 unlocked, listed `~`, no token in any storage. 92 tests.
@@ -561,6 +561,17 @@ unfolds the menu; tap pins. Edge = bridge setting `home_position`
 next page load. New `bridge/settings.py` (whitelisted keys/values, JSON in
 `<state>/settings.json`, env/flag = defaults), `GET/PUT /v1/settings` (PUT:
 token), a select in the launcher's Settings. 97 tests.
+
+### Addendum 2026-09-22 — agents-first README, store-only defaults
+
+User direction: the repo is primarily for agents to deploy sysbridge and build
+apps, and a fresh install ships with **only the App Store**. Done: README opens
+with an "Agents start here" block (install command, build guide, test command);
+`docs/BUILDING-APPS.md` is the canonical build guide (people + agents) with
+`docs/app-template.html` as the starter, and the skill points at it; the Llama
+Dashboard moved from `apps/` (built-in) to `store/llama-dashboard/` (installable).
+`apps/` now holds only `app-store`. On the reference machine the dashboard was
+re-installed from the store so nothing changed for the user.
 
 ## Phase 4 — per-app command permissions (idea, not scheduled)
 

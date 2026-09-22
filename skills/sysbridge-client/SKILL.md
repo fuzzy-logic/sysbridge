@@ -5,13 +5,18 @@ description: Build a single-file .html app for the sysbridge launcher at http://
 
 # Building an app for sysbridge
 
+> The canonical, always-current guide is **`docs/BUILDING-APPS.md`** in the
+> repo, with the starter **`docs/app-template.html`**. Read that file first
+> when you have the repo; this skill is the same guidance condensed so it can
+> be loaded without the repo. If the two ever disagree, the repo file wins.
+
 sysbridge is a Python-stdlib service at `http://localhost/` (port 80; `--port
 8182` in dev). It serves a launcher of installed single-file `.html` apps at
 `/`, each app at `/apps/<slug>/`, and the API at `/v1/…` — all one origin. It
 exists because a browser page cannot read `/sys`, `/proc` or run `rocm-smi`
 itself, and every existing GUI got its data by *owning* the process instead.
 
-The built-in dashboard `apps/llama-dash/index.html` is the reference app. Copy
+The dashboard `store/llama-dashboard/index.html` is the reference app. Copy
 its patterns rather than inventing new ones.
 
 ## What makes a file an app (conventions, no manifest to write)

@@ -1,10 +1,10 @@
 <!--
   Llama Dashboard — what is my llama-server router doing right now?
 
-  One file. No build, no dependencies. An ordinary sysbridge app: served from
-  http://llama-dash.localhost/ (fallback http://localhost/apps/llama-dash/) and
-  it talks to exactly one thing, the bridge on its own origin (opened from
-  file:// it uses http://localhost).
+  One file. No build, no dependencies. A sysbridge store app (store/llama-dashboard/):
+  install it from the App Store; served at http://llama-dashboard.localhost/ and it
+  talks to exactly one thing, the bridge on its own origin (opened from file://
+  it uses http://localhost).
   The llama-servers are the bridge's upstreams (SYSBRIDGE_LLAMA_SERVERS,
   default router :8080 + reviewer :8127) and arrive as probes:
 
@@ -29,6 +29,8 @@
 <title>Llama Dashboard</title>
 <meta name="description" content="What the llama-server router is doing right now: resident model, who is generating, GPU memory per process. Talks only to the bridge.">
 <meta name="app-icon" content="🦙">
+<meta name="app-version" content="1.0">
+<meta name="app-author" content="sysbridge">
 <style>
   :root {
     color-scheme: light dark;
@@ -154,12 +156,12 @@
 <script>
 'use strict';
 // ---------------------------------------------------------------- settings
-// This app talks to exactly one thing: the bridge. Served from /apps/llama-dash/ that is its own
+// This app talks to exactly one thing: the bridge. Served from /apps/llama-dashboard/ that is its own
 // origin; opened from file:// it is http://localhost. The llama-servers themselves are the bridge's
 // upstreams (SYSBRIDGE_LLAMA_SERVERS) and arrive as the `llama` / `llama_slots` probes.
 const SERVED_BY_BRIDGE = location.pathname.startsWith('/apps/') || /\.localhost$/.test(location.hostname);
 const DEFAULTS = { bridge: SERVED_BY_BRIDGE ? location.origin : 'http://localhost', token: '' };
-const LS_KEY = 'app:llama-dash:settings';      // prefixed for the /apps/ fallback, where apps share one origin
+const LS_KEY = 'app:llama-dashboard:settings';      // prefixed for the /apps/ fallback, where apps share one origin
 const TOKEN_KEY = 'sysbridge.token';            // written by the bridge into this origin's localStorage as it serves the page
 let S = loadSettings();
 function loadSettings() {

@@ -2,28 +2,46 @@
 
 **`http://localhost/`** — one address for every local web UI you run.
 
+> **Agents start here.** This repo is built to be driven by a coding agent.
+> - **Install sysbridge on a machine:** `git clone https://github.com/fuzzy-logic/sysbridge ~/ai/sysbridge && cd ~/ai/sysbridge && ./install.sh`
+>   — one script, one sudo prompt (a sysctl so a user service may bind port 80), reversible with `./install.sh --uninstall`. Details under [Install](#install).
+> - **Build an app for it:** read **[docs/BUILDING-APPS.md](docs/BUILDING-APPS.md)**, start from **[docs/app-template.html](docs/app-template.html)**,
+>   put the result in `store/<slug>/index.html`, make `python -m unittest tests.test_store` pass, open a PR. Claude Code users: the same guidance is the skill
+>   [skills/sysbridge-client/SKILL.md](skills/sysbridge-client/SKILL.md).
+> - **Verify a change:** `python -m unittest discover tests` (97 tests, no network, no root).
+
 sysbridge is a small localhost service that serves a home screen of
 single-file `.html` apps and gives them what a browser page cannot get on its
 own: system data (GPU memory, RAM, disk, CPU, battery, NPU, which processes
 hold the GPU, listening ports) and an allowlist of named actions. Python 3
 stdlib, zero dependencies, no build step.
 
-Two apps are built in: **Llama Dashboard** (what a `llama-server` router is
-doing right now, with confirm-guarded load/unload) and **App Store** (install
-the apps in this repo's `store/` folder with one click). The store ships
-**WTOP** (htop in a tab), **ChatBridge** (chat with the loaded models) and
-**Web-File** (a read-only file browser). Anyone can add an app with a pull
-request. You can also upload any `.html` from the launcher, or add tiles that
-link to UIs on other ports.
+A fresh install has exactly one app: the **App Store**, which installs the
+apps in this repo's `store/` folder with one click. The store ships **Llama
+Dashboard** (what a `llama-server` router is doing right now, with
+confirm-guarded load/unload), **WTOP** (htop in a tab), **ChatBridge** (chat
+with the loaded models) and **Web-File** (a read-only file browser). Anyone can
+add an app with a pull request. You can also upload any `.html` from the
+launcher, or add tiles that link to UIs on other ports.
 
 Every app is served on **its own origin**, `http://<slug>.localhost/`, so the
 browser isolates apps from one another — an installed app cannot read another
 app's data or token.
 
+> **Want to build an app?** Read **[docs/BUILDING-APPS.md](docs/BUILDING-APPS.md)** —
+> the conventions, the full API with every probe's data shape, the token and
+> origin rules, a fetch helper to copy, a done-checklist — and start from
+> **[docs/app-template.html](docs/app-template.html)**. It is written for people
+> **and for coding agents**: point your agent at that file and ask for the app
+> you want. Agents using Claude Code get the same guidance as a skill at
+> [skills/sysbridge-client/SKILL.md](skills/sysbridge-client/SKILL.md).
+> To share an app, add it under `store/<slug>/` and open a pull request;
+> `python -m unittest tests.test_store` is the check.
+
 ```
 http://localhost/                    launcher: grid of installed apps
-http://llama-dash.localhost/         built-in Llama Dashboard      (fallback: http://localhost/apps/llama-dash/)
-http://app-store.localhost/          built-in App Store
+http://app-store.localhost/          the App Store — the only app a fresh install has
+http://llama-dashboard.localhost/         Llama Dashboard, once installed from the store   (fallback: http://localhost/apps/llama-dashboard/)
 http://<slug>.localhost/             anything installed or uploaded; link tiles 302 to their URL
 http://<any>.localhost/v1/...        the API, answered on every host: an app calls its own origin
         │ GET /v1/all  POST /v1/action/…  POST /v1/apps  POST /v1/store/…  POST /v1/llama/…  GET /v1/fs/…
@@ -108,7 +126,7 @@ Conventions, no configuration:
 | name | `<title>` (or the filename if there is none) |
 | subtitle | `<meta name="description" content="…">` |
 | icon | `<meta name="app-icon" content="🦙">`, else the title's initials |
-| URL | `/apps/<slug>/`, slug = slugified title (`Llama Manager` → `llama-manager`) |
+| URL | `http://<slug>.localhost/`, slug = slugified title (`Llama Manager` → `llama-manager`); fallback `http://localhost/apps/<slug>/` |
 | replace | upload a page with the same title; the old copy moves to `.trash/` |
 | uninstall | from the tile's ⋯ menu; also moves to `.trash/`, never deletes |
 
@@ -122,9 +140,7 @@ stored in `~/.local/state/sysbridge/settings.json`) or given a default with
 out with `<meta name="sysbridge-home" content="none">`.
 
 **Link tiles** are the one thing that leaves port 80 on purpose: they open any
-URL — the router's own web UI on :8080, say — so the launcher also covers UIs
-that are not bridge apps. Everything uploaded is served from `/apps/<slug>/`
-on the launcher's own origin.
+URL, so the launcher also covers UIs that are not bridge apps.
 
 **Origins and tokens.** Each app runs at `http://<slug>.localhost/`, its own
 origin, so its storage is invisible to every other app. `*.localhost` resolves
@@ -161,6 +177,7 @@ external script/stylesheet/media, no hardcoded `localhost:port` (use
 
 | store app | what | needs |
 |---|---|---|
+| **Llama Dashboard** | which model is resident on the llama-server router, who is generating, GPU memory per process; confirm-guarded load/unload that names what gets evicted | `llama`, `llama_slots`, `router_models` probes; `POST /v1/llama/<server>/load|unload` |
 | **WTOP** | htop in a tab: per-core CPU, memory, uptime, load, every process with instantaneous CPU and RSS. Read-only. | `top` probe |
 | **ChatBridge** | chat with the models loaded right now; streaming; conversations stay in the browser | `POST /v1/llama/<server>/chat` — loaded models only, so a chat can never load or evict |
 | **Web-File** | read-only file browser and previewer under the allowed roots (your home by default) | `GET /v1/fs/…`; roots in `~/.config/sysbridge/fs.json`; `--fs-strict` for a separate token |
@@ -170,12 +187,16 @@ with `ProtectHome=read-only`, so a shell inside it could not do real work, and
 a shell is the one feature where a single bug is total compromise. If it comes,
 it will be a separate opt-in unit on its own origin with the sensitive token.
 
-Built-in apps (`apps/<slug>/index.html` in the repo) cannot be uninstalled.
+The only built-in app (`apps/app-store/index.html`) cannot be uninstalled;
+everything else can, and comes back from the store in one click.
 
 ## API
 
-Base `http://127.0.0.1:8182/v1`. JSON, `Cache-Control: no-store`, no `Server`
-header, responses capped at 1 MiB.
+Base `http://localhost/v1` — and the same on every `http://<slug>.localhost/`
+host, so an app always calls `location.origin`. JSON, `Cache-Control:
+no-store`, no `Server` header, responses capped at 1 MiB. The full reference
+with every probe's `data` shape is in
+[docs/BUILDING-APPS.md](docs/BUILDING-APPS.md#3-the-api-your-app-talks-to).
 
 | method | path | returns |
 |---|---|---|
@@ -210,7 +231,7 @@ the llama-servers named in `SYSBRIDGE_LLAMA_SERVERS` (default
 `router=http://127.0.0.1:8080,reviewer=http://127.0.0.1:8127`); every router
 GET the bridge makes carries `autoload=false`. `python -m bridge --list` prints them with
 descriptions; the exact `data` shapes are in
-[skills/sysbridge-client/SKILL.md](skills/sysbridge-client/SKILL.md).
+[docs/BUILDING-APPS.md](docs/BUILDING-APPS.md).
 
 ## Actions
 
@@ -220,7 +241,7 @@ Off by default. To enable:
 mkdir -p ~/.config/sysbridge
 cp config/actions.json.example ~/.config/sysbridge/actions.json
 $EDITOR ~/.config/sysbridge/actions.json
-python -m bridge --token          # paste into the dashboard's settings drawer
+python -m bridge --token          # only needed with --no-token-inject; apps normally get the token from the bridge
 ```
 
 Each action is a **fixed argv**. The request body may say `{"confirm": true}`
@@ -238,8 +259,8 @@ says what will be evicted.
 - **The ordinary token is embedded in served pages** (browser document requests only) and, by default, opens the file browser too. That is a deliberate convenience for a single-user machine; `--no-token-inject` and `--fs-strict` are the two dials back towards caution. The sensitive token is never served.
 - **The filesystem is the one place a client-supplied path is accepted.** It is fenced by `realpath` containment inside configured roots and is read-only. It opens with the ordinary token by default; `--fs-strict` demands the separate sensitive token that is never served.
 - **Origin allowlist on every request:** exactly `null` (a `file://` page),
-  `http://(127.0.0.1|localhost|[::1])(:port)?`, or values passed with
-  `--origins`. Allowed → reflected with `Vary: Origin`. Anything else → **403
+  `http://(127.0.0.1|localhost|[::1])(:port)?`, the per-app origins
+  `http://<slug>.localhost(:port)?`, or values passed with `--origins`. Allowed → reflected with `Vary: Origin`. Anything else → **403
   with no CORS headers**, so a remote page cannot read a byte. No Origin (curl)
   → allowed: the gate protects the browser, not the shell.
 - **Actions, installs, uninstalls and model load/unload need the ordinary token** from `$XDG_RUNTIME_DIR/sysbridge/token`
@@ -257,10 +278,16 @@ says what will be evicted.
 
 ## Writing the next app
 
-Read [skills/sysbridge-client/SKILL.md](skills/sysbridge-client/SKILL.md). It
-is written for an agent: the envelope, the Origin rules, polling vs stream, the
-token paste flow, a fetch helper to copy, the llama-server endpoints the
-dashboard uses (including `?autoload=false`), and a done-checklist.
+**[docs/BUILDING-APPS.md](docs/BUILDING-APPS.md)** is the guide, for people and
+for agents: what makes a file an app, the rules and why each exists, the whole
+API with data shapes, origins and tokens, code to copy, a checklist, and which
+shipped app to read for which pattern. **[docs/app-template.html](docs/app-template.html)**
+is the smallest complete app. For Claude Code the same guidance is packaged as
+the skill [skills/sysbridge-client/SKILL.md](skills/sysbridge-client/SKILL.md).
+
+A good agent prompt is simply: *"Read docs/BUILDING-APPS.md, then build a
+sysbridge app that ⟨does X⟩; put it in store/⟨slug⟩/index.html and make
+`python -m unittest tests.test_store` pass."*
 
 ## Development
 
@@ -280,7 +307,7 @@ Layout:
 
 ```
 bridge/
-  __main__.py   argparse: --port --bind --origins --actions-file --apps-root --once NAME --list --token
+  __main__.py   argparse: --port --bind --origins --actions-file --apps-root --home-position --no-token-inject --fs-strict --once NAME --list --token
   server.py     ThreadingHTTPServer, routing, static apps, CORS, SSE, token check
   llama.py      llama-server upstreams as probes (llama, llama_slots) + load/unload + streaming chat proxy
   top.py        the `top` probe: instantaneous per-process CPU from /proc deltas
@@ -294,9 +321,10 @@ bridge/
   actions.py    allowlist file → fixed argv, confirm flag, mtime reload
   parsers.py    pure text → dict parsers (unit-tested)
   util.py       run(), read_sysfs(), hwmon_by_name(), first_amdgpu_card()
-apps/llama-dash/  apps/app-store/   built-in apps (any apps/<slug>/index.html is one)
-store/wtop/  store/chatbridge/  store/web-file/   the catalogue (PRs add folders)
-skills/sysbridge-client/SKILL.md
+apps/app-store/                  the one built-in app (any apps/<slug>/index.html would be one)
+store/llama-dashboard/  store/wtop/  store/chatbridge/  store/web-file/   the catalogue (PRs add folders)
+docs/BUILDING-APPS.md  docs/app-template.html   how to build an app (people + agents), and the starter
+skills/sysbridge-client/SKILL.md               the same, packaged as a Claude Code skill
 systemd/  config/  tests/
 ```
 

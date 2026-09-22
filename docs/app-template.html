@@ -1,0 +1,68 @@
+<!--
+  Starter for a sysbridge app. Copy this file, change the four tags below, write your app.
+  Everything is inline; the only network calls go to location.origin (the bridge).
+  Install it by dropping the file on the launcher's ＋ tile, or add it to store/<slug>/ and open a PR.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My App</title>                                                  <!-- tile name; URL becomes http://my-app.localhost/ -->
+<meta name="description" content="One line about what this app shows or does.">   <!-- tile subtitle -->
+<meta name="app-icon" content="🧩">                                    <!-- tile icon (one emoji) -->
+<meta name="app-version" content="0.1">
+<meta name="app-author" content="you">
+<style>
+  :root { color-scheme: light dark; --bg:#f6f7f9; --fg:#1c1f24; --muted:#6b7280; --card:#fff; --line:#e3e6ea; --accent:#2563eb; --bad:#dc2626;
+          font-family: system-ui, sans-serif; font-size: 14px; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --fg:#e5e7eb; --muted:#9aa3ad; --card:#171b21; --line:#262b33; } }
+  body { margin: 0; padding: 1rem 1.2rem 1rem; background: var(--bg); color: var(--fg); }
+  header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
+  h1 { font-size: 1.05rem; margin: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: .6rem; padding: .8rem 1rem; }
+  .muted { color: var(--muted); } .err { color: var(--bad); } .err:empty { display: none; }
+  pre { font-size: .8rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>
+
+<header><h1>My App</h1><span class="muted" id="stamp">…</span></header>
+<div class="err" id="err"></div>
+<div class="card"><pre id="out">loading…</pre></div>
+
+<script>
+'use strict';
+// ---- the bridge is this page's origin (served at http://my-app.localhost/); http://localhost when opened from file://
+const BRIDGE = /\.localhost$/.test(location.hostname) || location.pathname.startsWith('/apps/') ? location.origin : 'http://localhost';
+// ---- the bridge wrote the token into localStorage before this script ran; read it when you need it
+const token = () => { try { return localStorage.getItem('sysbridge.token') || ''; } catch (e) { return ''; } };
+
+async function bridgeGet(path, timeout = 3000) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const r = await fetch(BRIDGE + path, { signal: ctl.signal, cache: 'no-store' });
+    const body = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(body?.error?.message || `HTTP ${r.status}`);
+    return body;
+  } finally { clearTimeout(t); }
+}
+async function bridgePost(path, body, extraHeaders = {}) {           // for token-gated writes (actions, load/unload)
+  const r = await fetch(BRIDGE + path, { method: 'POST', cache: 'no-store', body: JSON.stringify(body),
+    headers: { 'Content-Type': 'application/json', 'X-Bridge-Token': token(), ...extraHeaders } });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(j?.error?.message || `HTTP ${r.status}`);
+  return j;
+}
+
+// ---- one request per tick; ask only for the probes you draw
+let paused = false;
+async function tick() {
+  if (paused) return;
+  try {
+    const all = await bridgeGet('/v1/all?names=cpu,ram');
+    const cpu = all.results.cpu, ram = all.results.ram;         // envelopes: {ok, stale, data, error}
+    document.getElementById('out').textContent = JSON.stringify({ cpu: cpu.data, ram_used_GiB: ram.data && (ram.data.used / 2 ** 30).toFixed(1),
+      stale: { cpu: cpu.stale, ram: ram.stale } }, null, 2);
+    document.getElementById('err').textContent = '';
+    document.getElementById('stamp').textContent = new Date().toLocaleTimeString();
+  } catch (e) { document.getElementById('err').textContent = `bridge: ${e.message}`; }   // keep the last good view on screen
+}
+setInterval(tick, 1000); tick();
+document.addEventListener('visibilitychange', () => { paused = document.hidden; if (!paused) tick(); });
+</script>
