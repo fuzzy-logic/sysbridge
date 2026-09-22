@@ -451,6 +451,21 @@ verified from the service (health, all probes, launcher, dashboard). (2) The
 "Router UI" link tile added during testing was left installed in
 `~/.local/state/sysbridge/apps/router-ui/` — keep or uninstall from its ⋯ menu.
 
+### Addendum 2026-09-22 — the way home
+
+Every HTML page served from `/apps/<slug>/` gets a small floating ⌂ button
+appended by the bridge (`HOME_BUTTON` in `server.py`, closed shadow root,
+bottom-left) so uploaded apps need no code for it; opt out with
+`<meta name="sysbridge-home" content="none">`. The launcher and non-HTML files
+are not touched. The dashboard's own link was removed in favour of it.
+
+Clarification recorded because it caused confusion: **everything is on port
+80.** Launcher `/`, the built-in dashboard `/apps/llama-dash/`, every upload
+`/apps/<slug>/`, the API `/v1/…`. The `:8080` / `:8127` shown *inside* the
+dashboard are the llama-servers it monitors, not where it is served. The only
+thing that leaves port 80 is a **link tile**, whose whole job is to open
+another URL.
+
 ## Phase 4 — per-app command permissions (idea, not scheduled)
 
 An app declares the CLI commands it wants (in its manifest / a meta tag); the
