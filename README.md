@@ -1,23 +1,28 @@
 # sysbridge
 
-A small localhost service that gives single-file `.html` apps the system data a
-browser cannot read itself — GPU memory, RAM, disk, CPU, battery, NPU, which
-processes hold the GPU, listening ports — plus an allowlist of named actions.
-Python 3 stdlib, zero dependencies, no build step.
+**`http://localhost/`** — one address for every local web UI you run.
 
-It ships with its first consumer, **`apps/llama-dash/index.html`**: one file
-that shows what a `llama-server` **router** is doing right now — which model is
-resident, who is generating, how much GPU memory each process holds — with
-confirm-guarded load/unload. Open it from `file://`. Nothing to install.
+sysbridge is a small localhost service that serves a home screen of
+single-file `.html` apps and gives them what a browser page cannot get on its
+own: system data (GPU memory, RAM, disk, CPU, battery, NPU, which processes
+hold the GPU, listening ports) and an allowlist of named actions. Python 3
+stdlib, zero dependencies, no build step.
+
+It ships with one app built in, **Llama Dashboard**: what a `llama-server`
+**router** is doing right now — which model is resident, who is generating,
+how much GPU memory each process holds — with confirm-guarded load/unload.
+Install more by uploading an `.html` file from the launcher; add tiles that
+link to UIs on other ports so you never remember a port again.
 
 ```
-┌ browser page (file:// or any localhost port) ─────────────────────────────┐
-│  apps/llama-dash/index.html        …or the next .html app you write       │
-└───────┬──────────────────────┬─────────────────────────┬──────────────────┘
-        │ GET /models /slots   │ GET /slots /props       │ GET /v1/all  POST /v1/action/…
-        ▼                      ▼                         ▼
-  llama-server router     llama-server (single)     sysbridge  :8182
-  :8080  (your models)    :8127 (optional)          /sys /proc rocm-smi xrt-smi df ss ps
+http://localhost/                    launcher: grid of installed apps
+http://localhost/apps/llama-dash/    built-in Llama Dashboard
+http://localhost/apps/<slug>/        anything you upload; link tiles 302 to their URL
+http://localhost/v1/...              the API every app uses (same origin, no CORS dance)
+        │ GET /v1/all  POST /v1/action/…  POST /v1/apps
+        ▼
+  sysbridge  →  /sys /proc rocm-smi xrt-smi df ss ps     and, from the apps themselves:
+                                                          llama-server router :8080, reviewer :8127
 ```
 
 ## What is measured, and why the design looks like this
@@ -50,29 +55,66 @@ numbers, is in [HANDOVER.md](HANDOVER.md).
 
 ## Install
 
-The dashboard alone needs nothing: open `apps/llama-dash/index.html` in a
-browser. Settings (top right) hold the three endpoints and persist locally.
-
-The bridge, as a user service:
-
 ```bash
 git clone https://github.com/fuzzy-logic/sysbridge ~/ai/sysbridge
 cd ~/ai/sysbridge
 python -m bridge --once gpu                      # works before any service exists
+python -m bridge --port 8182                     # try it: http://localhost:8182/
+```
+
+**Port 80.** The default port is 80 so the launcher is just `http://localhost/`.
+A user process may only bind ports below 1024 after a one-time kernel setting
+(needs root; it lowers the threshold for every user on the machine, and is
+reversed by deleting the file and setting the value back to 1024):
+
+```bash
+sudo sh -c 'printf "net.ipv4.ip_unprivileged_port_start = 80\n" > /etc/sysctl.d/80-sysbridge.conf && sysctl -p /etc/sysctl.d/80-sysbridge.conf'
+```
+
+Without it the bridge exits with that exact instruction rather than silently
+picking another port. `setcap` on the Python binary was deliberately not used:
+it would grant the capability to every Python script.
+
+**As a user service:**
+
+```bash
 ln -s ~/ai/sysbridge/systemd/sysbridge.service ~/.config/systemd/user/
 mkdir -p ~/.config/systemd/user/sysbridge.service.d
 cp systemd/sysbridge.service.d/local.conf.example ~/.config/systemd/user/sysbridge.service.d/local.conf
 $EDITOR ~/.config/systemd/user/sysbridge.service.d/local.conf   # SYSBRIDGE_DIR=%h/ai/sysbridge
 systemctl --user daemon-reload
 systemctl --user enable --now sysbridge
-curl -s http://127.0.0.1:8182/v1/health
+xdg-open http://localhost/
 ```
 
 The unit is symlinked, not copied, so `git pull` updates it; machine-specific
-values live in the drop-in, never in the repo. Nothing is enabled by cloning.
+values live in the drop-in, never in the repo. Uploaded apps live in
+`~/.local/state/sysbridge/apps/` (`StateDirectory=sysbridge`). Nothing is
+enabled by cloning.
 
-Ports: **8182** bridge, 8080 router, 8127 reviewer — all defaults, all
-changeable in the dashboard settings and the drop-in.
+## Apps
+
+**Install** = upload one `.html` from the launcher (drop it on the ＋ tile).
+Conventions, no configuration:
+
+| what | comes from |
+|---|---|
+| name | `<title>` (or the filename if there is none) |
+| subtitle | `<meta name="description" content="…">` |
+| icon | `<meta name="app-icon" content="🦙">`, else the title's initials |
+| URL | `/apps/<slug>/`, slug = slugified title (`Llama Manager` → `llama-manager`) |
+| replace | upload a page with the same title; the old copy moves to `.trash/` |
+| uninstall | from the tile's ⋯ menu; also moves to `.trash/`, never deletes |
+
+**Link tiles** open any URL — the router's own web UI on :8080, say — so the
+launcher covers UIs that are not bridge apps too.
+
+Every app is same-origin with the API, so no app needs a bridge URL, and the
+token pasted once in the launcher's Settings (`localStorage` key
+`sysbridge.token`) serves every app. Apps keep their own state in
+`localStorage` under `app:<slug>:…`; same-origin apps share one store, so
+unprefixed keys collide. Built-in apps (`apps/<slug>/index.html` in the repo)
+cannot be uninstalled.
 
 ## API
 
@@ -88,6 +130,12 @@ header, responses capped at 1 MiB.
 | GET | `/stream?names=…&interval_ms=1000` | SSE `event: probes`, same body; ≤ 4 clients |
 | GET | `/actions` | `[{name, description, confirm}]`; 404 while no allowlist file exists |
 | POST | `/action/{name}` | runs the fixed argv; `X-Bridge-Token` required; `{"confirm": true}` when marked |
+| GET | `/apps` | installed apps' manifests, built-ins first |
+| POST | `/apps` | install: body `text/html` = the page (≤ 4 MiB, optional `X-Filename`), or `application/json` `{"kind":"link","url",…}`; token required |
+| DELETE | `/apps/{slug}` | uninstall to `.trash/`; token + `{"confirm": true}`; 403 for built-ins |
+
+Outside `/v1`: `/` is the launcher, `/apps/<slug>/…` serves an app's files
+(slug validated, no traversal, no listings; link apps 302).
 
 Envelope: `{ok, name, ts, ttl_ms, stale, data, error}`. `stale: true` means
 the value is the last good one and the refresh failed — clients keep it and
@@ -120,13 +168,14 @@ says what will be evicted.
 ## Security model
 
 - **Bind 127.0.0.1 only.** Other addresses are not offered.
+- **Uploads are trusted code, by design.** An installed app runs on the bridge's origin with the same access as the launcher. Only the token holder can install; a remote page cannot (403, no CORS). Files are served with `nosniff` and only from inside the app's own directory.
 - **Origin allowlist on every request:** exactly `null` (a `file://` page),
   `http://(127.0.0.1|localhost|[::1])(:port)?`, or values passed with
   `--origins`. Allowed → reflected with `Vary: Origin`. Anything else → **403
   with no CORS headers**, so a remote page cannot read a byte. No Origin (curl)
   → allowed: the gate protects the browser, not the shell.
-- **Actions need a token** from `$XDG_RUNTIME_DIR/sysbridge/token` (0600,
-  created at start, never served). Constant-time compare.
+- **Actions, installs and uninstalls need a token** from `$XDG_RUNTIME_DIR/sysbridge/token`
+  (0600, created at start, never served). Constant-time compare.
 - **Nothing from the client is interpreted** beyond probe/action names
   (`^[a-z0-9_]{1,32}$`, must exist) and the `confirm` boolean.
 - **systemd hardening** from pi-cli-safe: `ProtectSystem=strict`,
@@ -148,10 +197,10 @@ dashboard uses (including `?autoload=false`), and a done-checklist.
 ## Development
 
 ```bash
-python -m unittest discover tests     # 39 tests: parsers on fixtures, registry, CORS/token over a socket
+python -m unittest discover tests     # 55 tests: parsers, registry, apps store, CORS/token/apps API over a socket
 python -m bridge --once rocm_pids     # any probe, as JSON, exit 1 on error
 python -m bridge --list
-python -m http.server 8181 --directory apps/llama-dash   # the dashboard from a localhost origin
+python -m bridge --port 8182          # launcher at http://localhost:8182/ without the port-80 sysctl
 ```
 
 Fixtures under `tests/fixtures/` are real captures (`df` with 5 btrfs
@@ -162,14 +211,16 @@ Layout:
 
 ```
 bridge/
-  __main__.py   argparse: --port --bind --origins --actions-file --once NAME --list --token
-  server.py     ThreadingHTTPServer, routing, CORS, SSE, token check
+  __main__.py   argparse: --port --bind --origins --actions-file --apps-root --once NAME --list --token
+  server.py     ThreadingHTTPServer, routing, static apps, CORS, SSE, token check
+  apps.py       installed apps: manifests from <title>/<meta>, install/replace/uninstall to .trash, traversal-safe resolve
+  www/launcher.html   the home screen at /
   registry.py   @probe registry, per-probe TTL cache + lock, async refresh, error isolation
   probes.py     one function per data point
   actions.py    allowlist file → fixed argv, confirm flag, mtime reload
   parsers.py    pure text → dict parsers (unit-tested)
   util.py       run(), read_sysfs(), hwmon_by_name(), first_amdgpu_card()
-apps/llama-dash/index.html
+apps/llama-dash/index.html   built-in app (any apps/<slug>/index.html is one)
 skills/sysbridge-client/SKILL.md
 systemd/  config/  tests/
 ```

@@ -32,6 +32,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
 from .actions import Actions
+from .apps import Apps, AppsError, MAX_APP_BYTES, content_type_for, repo_builtins
 from .probes import REG
 from .registry import error_envelope, valid_name
 from .util import xdg_runtime_dir
@@ -47,10 +48,16 @@ START_TS = time.time()
 @dataclass
 class Config:
     bind: str = "127.0.0.1"
-    port: int = 8182
+    port: int = 80
     extra_origins: list[str] = field(default_factory=list)
     actions_file: Optional[str] = None
     token_file: Optional[str] = None
+    apps_root: Optional[str] = None            # default: see apps.apps_root()
+    builtins: Optional[dict] = None            # default: apps/<slug>/index.html in the repo
+
+
+LAUNCHER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "www", "launcher.html")
+MAX_APP_BODY = MAX_APP_BYTES + 64 * 1024
 
 
 # ------------------------------------------------------------------ token
@@ -84,6 +91,7 @@ class Bridge(ThreadingHTTPServer):
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.actions = Actions(cfg.actions_file)
+        self.apps = Apps(cfg.apps_root, cfg.builtins if cfg.builtins is not None else repo_builtins())
         self.token = ensure_token(cfg.token_file or token_path())
         self.sem = threading.BoundedSemaphore(MAX_CONCURRENCY)
         self.stream_clients = 0
@@ -166,10 +174,40 @@ class Handler(BaseHTTPRequestHandler):
             n = 0
         if n <= 0:
             return b""
-        if n > self.MAX_BODY:
+        limit = MAX_APP_BODY if urlsplit(self.path).path == "/v1/apps" else self.MAX_BODY
+        if n > limit:
             self.close_connection = True
             return None
         return self.rfile.read(n)
+
+    def _send_file(self, path: str, origin: Optional[str]) -> None:
+        try:
+            with open(path, "rb") as f:
+                data = f.read(MAX_APP_BODY + 1)
+        except OSError:
+            return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "file not found"}}, origin)
+        if len(data) > MAX_APP_BODY:
+            return self._send(500, {"ok": False, "error": {"type": "TooLarge", "message": "file too large to serve"}}, origin)
+        self.send_response(200)
+        self.send_header("Content-Type", content_type_for(path))
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self._cors(origin)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def _redirect(self, status: int, location: str) -> None:
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _token_ok(self) -> bool:
+        tok = self.headers.get("X-Bridge-Token", "")
+        return bool(tok) and secrets.compare_digest(tok, self.server.token)
 
     @staticmethod
     def _parse_json(raw: bytes) -> dict:
@@ -188,8 +226,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._forbidden()
         self.send_response(204)
         self._cors(origin)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Bridge-Token")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Bridge-Token, X-Filename")
         self.send_header("Access-Control-Max-Age", "600")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -208,9 +246,30 @@ class Handler(BaseHTTPRequestHandler):
             u = urlsplit(self.path)
             q = parse_qs(u.query)
             parts = [p for p in u.path.split("/") if p]
+            # -- launcher and installed apps (same origin as the API on purpose) --
+            if u.path == "/" or u.path == "/index.html":
+                return self._send_file(LAUNCHER_PATH, origin)
+            if parts[:1] == ["apps"] and len(parts) >= 2:
+                slug = parts[1]
+                m = self.server.apps.get(slug)
+                if m is None:
+                    return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "no such app"}}, origin)
+                if m["kind"] == "link":
+                    return self._redirect(302, m["url"])
+                if len(parts) == 2 and not u.path.endswith("/"):
+                    return self._redirect(301, f"/apps/{slug}/")  # relative URLs inside the app need the slash
+                rel = "/".join(parts[2:]) + ("/" if u.path.endswith("/") and len(parts) > 2 else "")
+                path = self.server.apps.resolve(slug, rel)
+                if path is None:
+                    return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "file not found"}}, origin)
+                return self._send_file(path, origin)
+            if u.path == "/favicon.ico":
+                return self._send(404, {"ok": False}, origin)
             if parts[:1] != ["v1"] or len(parts) < 2:
                 return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "see /v1/health"}}, origin)
             what = parts[1]
+            if what == "apps" and len(parts) == 2:
+                return self._send(200, self.server.apps.list(), origin)
             if what == "health" and len(parts) == 2:
                 return self._send(200, {"ok": True, "version": __version__, "uptime_s": round(time.time() - START_TS, 1),
                                         "probes": REG.names(), "actions_enabled": self.server.actions.enabled(),
@@ -245,15 +304,16 @@ class Handler(BaseHTTPRequestHandler):
         if raw is None:
             return self._send(413, {"ok": False, "error": {"type": "BadRequest", "message": f"body over {self.MAX_BODY} bytes"}}, origin)
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
+        if parts == ["v1", "apps"]:
+            return self._post_app(raw, origin)
         if parts[:2] != ["v1", "action"] or len(parts) != 3:
-            return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "POST only to /v1/action/{name}"}}, origin)
+            return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "POST only to /v1/action/{name} or /v1/apps"}}, origin)
         name = parts[2][:64]
         acts = self.server.actions
         if not acts.enabled():
             return self._send(404, {"ok": False, "error": {"type": "ActionsDisabled", "message": "no actions file"}}, origin)
         # token before anything else that could leak whether an action exists
-        tok = self.headers.get("X-Bridge-Token", "")
-        if not tok or not secrets.compare_digest(tok, self.server.token):
+        if not self._token_ok():
             return self._send(401, {"ok": False, "error": {"type": "Unauthorized", "message": "missing or wrong X-Bridge-Token"}}, origin)
         spec = acts.get(name)
         if spec is None:
@@ -271,6 +331,54 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self.server.sem.release()
         return self._send(200, result, origin)
+
+    def _post_app(self, raw: Optional[bytes], origin: Optional[str]) -> None:
+        """Install an app. text/html body = the page itself; application/json = a link app."""
+        if not self._token_ok():
+            return self._send(401, {"ok": False, "error": {"type": "Unauthorized", "message": "missing or wrong X-Bridge-Token"}}, origin)
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        try:
+            if ctype == "application/json":
+                body = self._parse_json(raw or b"")
+                if body.get("kind", "link") != "link":
+                    raise AppsError('JSON uploads must be {"kind": "link", "url": …}')
+                m = self.server.apps.install_link(str(body.get("url", "")), body.get("title"), body.get("icon"), body.get("description"))
+            else:
+                if ctype not in ("text/html", "application/xhtml+xml", "text/plain", "application/octet-stream", ""):
+                    raise AppsError(f"unsupported Content-Type {ctype!r}; send text/html or application/json", 415)
+                from urllib.parse import unquote
+                fname = unquote(self.headers.get("X-Filename", ""))[:200] or None
+                m = self.server.apps.install_html((raw or b"").decode("utf-8", "replace"), fname)
+        except AppsError as e:
+            return self._send(e.status, {"ok": False, "error": {"type": "AppsError", "message": str(e)}}, origin)
+        except ValueError as e:
+            return self._send(400, {"ok": False, "error": {"type": "BadRequest", "message": str(e)}}, origin)
+        print(f"sysbridge: app installed {m['slug']} kind={m['kind']} size={m['size']} replaced={m.get('replaced')} origin={origin or '-'}",
+              file=sys.stderr, flush=True)
+        return self._send(201, {"ok": True, "app": m}, origin)
+
+    def do_DELETE(self) -> None:
+        origin = self._origin()
+        raw = self._drain_body()
+        if not self.server.origin_allowed(origin):
+            return self._forbidden()
+        parts = [p for p in urlsplit(self.path).path.split("/") if p]
+        if parts[:2] != ["v1", "apps"] or len(parts) != 3:
+            return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "DELETE only /v1/apps/{slug}"}}, origin)
+        if not self._token_ok():
+            return self._send(401, {"ok": False, "error": {"type": "Unauthorized", "message": "missing or wrong X-Bridge-Token"}}, origin)
+        try:
+            body = self._parse_json(raw or b"")
+        except ValueError as e:
+            return self._send(400, {"ok": False, "error": {"type": "BadRequest", "message": str(e)}}, origin)
+        if body.get("confirm") is not True:
+            return self._send(400, {"ok": False, "error": {"type": "ConfirmRequired", "message": 'uninstall needs {"confirm": true}'}}, origin)
+        try:
+            moved = self.server.apps.uninstall(parts[2][:64])
+        except AppsError as e:
+            return self._send(e.status, {"ok": False, "error": {"type": "AppsError", "message": str(e)}}, origin)
+        print(f"sysbridge: app uninstalled {parts[2][:64]} -> {os.path.basename(moved)} origin={origin or '-'}", file=sys.stderr, flush=True)
+        return self._send(200, {"ok": True, "trashed": os.path.basename(moved)}, origin)
 
     # -- helpers -------------------------------------------------------------
     def _names(self, q: dict) -> Optional[list[str]]:
@@ -325,8 +433,19 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(cfg: Config) -> None:
-    srv = Bridge(cfg)
-    print(f"sysbridge {__version__} listening on http://{cfg.bind}:{cfg.port}  probes={len(REG.names())}  "
+    try:
+        srv = Bridge(cfg)
+    except PermissionError:
+        print(f"sysbridge: cannot bind {cfg.bind}:{cfg.port} — ports below 1024 need a one-time kernel setting.\n"
+              f"  As root:  printf 'net.ipv4.ip_unprivileged_port_start = 80\\n' > /etc/sysctl.d/80-sysbridge.conf && sysctl -p /etc/sysctl.d/80-sysbridge.conf\n"
+              f"  (lowers the threshold for all users; reverse by deleting the file and setting 1024)\n"
+              f"  Or run with --port 8182 for now.", file=sys.stderr, flush=True)
+        raise SystemExit(2)
+    except OSError as e:
+        print(f"sysbridge: cannot bind {cfg.bind}:{cfg.port}: {e.strerror or e} (something else listening? try --port 8182)", file=sys.stderr, flush=True)
+        raise SystemExit(2)
+    port = "" if cfg.port == 80 else f":{cfg.port}"
+    print(f"sysbridge {__version__} launcher at http://localhost{port}/  probes={len(REG.names())}  apps={len(srv.apps.list())}  "
           f"actions={'enabled' if srv.actions.enabled() else 'disabled (no actions file)'}  token={token_path()}",
           file=sys.stderr, flush=True)
     try:

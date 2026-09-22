@@ -17,8 +17,16 @@ class ServerFixture:
             with open(self.actions_path, "w") as f:
                 json.dump(actions_json, f)
         self.token_file = os.path.join(self.tmp.name, "rt", "token")
+        self.apps_root = os.path.join(self.tmp.name, "apps")
+        self.builtin_dir = os.path.join(self.tmp.name, "builtin", "dash")
+        os.makedirs(self.builtin_dir)
+        with open(os.path.join(self.builtin_dir, "index.html"), "w") as f:
+            f.write("<title>Llama Dashboard</title><meta name=app-icon content=🦙><script src=app.js></script>")
+        with open(os.path.join(self.builtin_dir, "app.js"), "w") as f:
+            f.write("// js")
         cfg = Config(bind="127.0.0.1", port=0, extra_origins=["https://allowed.example"],
-                     actions_file=self.actions_path, token_file=self.token_file)
+                     actions_file=self.actions_path, token_file=self.token_file,
+                     apps_root=self.apps_root, builtins={"dash": self.builtin_dir})
         self.srv = Bridge(cfg)
         self.port = self.srv.server_address[1]
         self.thread = threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
@@ -35,6 +43,14 @@ class ServerFixture:
         except ValueError:
             parsed = data
         return r.status, dict((k.lower(), v) for k, v in r.getheaders()), parsed
+
+    def raw(self, method, path, headers=None, body=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request(method, path, body=body, headers=headers or {})
+        r = c.getresponse()
+        data = r.read()
+        c.close()
+        return r.status, dict((k.lower(), v) for k, v in r.getheaders()), data
 
     def close(self):
         self.srv.shutdown()
@@ -203,6 +219,104 @@ class ActionTests(unittest.TestCase):
         self.assertEqual(b["error"]["type"], "ActionsInvalid")
         with open(self.fx.actions_path, "w") as f:
             json.dump(ACTIONS, f)
+
+
+APP = "<!doctype html><title>Llama Manager</title><meta name=description content='Herd them'><meta name=app-icon content='🦙'><body>v1"
+
+
+class AppsApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.fx = ServerFixture(actions_json=None)
+        cls.tok = cls.fx.srv.token
+        cls.H = {"X-Bridge-Token": cls.tok, "Origin": "http://localhost"}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.close()
+
+    def test_launcher_served_at_root(self):
+        st, h, data = self.fx.raw("GET", "/")
+        self.assertEqual(st, 200)
+        self.assertTrue(h["content-type"].startswith("text/html"))
+        self.assertIn(b"<title>", data)
+        self.assertEqual(h["x-content-type-options"], "nosniff")
+        self.assertNotIn("server", h)
+
+    def test_builtin_app_static(self):
+        st, h, _ = self.fx.raw("GET", "/apps/dash")
+        self.assertEqual(st, 301)
+        self.assertEqual(h["location"], "/apps/dash/")
+        st, h, data = self.fx.raw("GET", "/apps/dash/")
+        self.assertEqual(st, 200)
+        self.assertIn(b"Llama Dashboard", data)
+        st, h, data = self.fx.raw("GET", "/apps/dash/app.js")
+        self.assertEqual(st, 200)
+        self.assertTrue(h["content-type"].startswith("text/javascript"))
+        for bad in ["/apps/dash/../../etc/passwd", "/apps/dash/%2e%2e/%2e%2e/etc/passwd", "/apps/nope/", "/apps/Bad%20Slug/"]:
+            st, _, _ = self.fx.raw("GET", bad)
+            self.assertEqual(st, 404, bad)
+
+    def test_list_has_builtin(self):
+        st, _, b = self.fx.request("GET", "/v1/apps", {"Origin": "null"})
+        self.assertEqual(st, 200)
+        self.assertEqual(b[0]["slug"], "dash")
+        self.assertTrue(b[0]["builtin"])
+        self.assertEqual(b[0]["icon"], "🦙")
+
+    def test_upload_requires_token_and_good_origin(self):
+        st, _, b = self.fx.request("POST", "/v1/apps", {"Content-Type": "text/html", "Origin": "null"}, APP.encode())
+        self.assertEqual(st, 401)
+        st, h, _ = self.fx.request("POST", "/v1/apps", {"Content-Type": "text/html", "Origin": "https://evil.example", "X-Bridge-Token": self.tok}, APP.encode())
+        self.assertEqual(st, 403)
+        self.assertNotIn("access-control-allow-origin", h)
+        self.assertNotIn("llama-manager", [a["slug"] for a in self.fx.request("GET", "/v1/apps")[2]])  # nothing installed
+
+    def test_upload_open_replace_uninstall(self):
+        st, _, b = self.fx.request("POST", "/v1/apps", {**self.H, "Content-Type": "text/html", "X-Filename": "llama.html"}, APP.encode())
+        self.assertEqual(st, 201, b)
+        self.assertEqual(b["app"]["slug"], "llama-manager")
+        self.assertEqual(b["app"]["icon"], "🦙")
+        self.assertEqual(b["app"]["original_filename"], "llama.html")
+        st, h, data = self.fx.raw("GET", "/apps/llama-manager/")
+        self.assertEqual(st, 200)
+        self.assertIn(b"v1", data)
+        st, _, b = self.fx.request("POST", "/v1/apps", {**self.H, "Content-Type": "text/html"}, APP.replace("v1", "v2").encode())
+        self.assertEqual(st, 201)
+        self.assertTrue(b["app"]["replaced"].startswith("llama-manager-"))
+        self.assertIn(b"v2", self.fx.raw("GET", "/apps/llama-manager/")[2])
+        # uninstall: confirm required, builtin protected, then trashed
+        st, _, b = self.fx.request("DELETE", "/v1/apps/llama-manager", self.H, b"{}")
+        self.assertEqual(st, 400)
+        self.assertEqual(b["error"]["type"], "ConfirmRequired")
+        st, _, b = self.fx.request("DELETE", "/v1/apps/dash", self.H, b'{"confirm":true}')
+        self.assertEqual(st, 403)
+        st, _, _ = self.fx.request("DELETE", "/v1/apps/llama-manager", {"Origin": "null"}, b'{"confirm":true}')
+        self.assertEqual(st, 401)
+        st, _, b = self.fx.request("DELETE", "/v1/apps/llama-manager", self.H, b'{"confirm":true}')
+        self.assertEqual(st, 200)
+        self.assertTrue(b["trashed"].startswith("llama-manager-"))
+        self.assertEqual(self.fx.raw("GET", "/apps/llama-manager/")[0], 404)
+        self.assertEqual(len([d for d in os.listdir(os.path.join(self.fx.apps_root, ".trash")) if d.startswith("llama-manager-")]), 2)
+
+    def test_link_app_redirects(self):
+        st, _, b = self.fx.request("POST", "/v1/apps", {**self.H, "Content-Type": "application/json"},
+                                   json.dumps({"kind": "link", "url": "http://127.0.0.1:8080/", "title": "Router UI", "icon": "🧭"}).encode())
+        self.assertEqual(st, 201, b)
+        st, h, _ = self.fx.raw("GET", "/apps/router-ui/")
+        self.assertEqual(st, 302)
+        self.assertEqual(h["location"], "http://127.0.0.1:8080/")
+        st, _, b = self.fx.request("POST", "/v1/apps", {**self.H, "Content-Type": "application/json"}, json.dumps({"url": "javascript:alert(1)", "title": "x"}).encode())
+        self.assertEqual(st, 400)
+        self.fx.request("DELETE", "/v1/apps/router-ui", self.H, b'{"confirm":true}')
+
+    def test_bad_uploads(self):
+        st, _, b = self.fx.request("POST", "/v1/apps", {**self.H, "Content-Type": "text/html"}, b"no tags at all")
+        self.assertEqual(st, 400)
+        st, _, b = self.fx.request("POST", "/v1/apps", {**self.H, "Content-Type": "image/png"}, b"\x89PNG<x>")
+        self.assertEqual(st, 415)
+        st, _, _ = self.fx.request("POST", "/v1/apps", {**self.H, "Content-Type": "text/html"}, b"<title>dash</title>")
+        self.assertEqual(st, 409)
 
 
 if __name__ == "__main__":

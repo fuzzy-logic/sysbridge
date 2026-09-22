@@ -4,5 +4,5 @@
 [Service]
 Environment=SYSBRIDGE_DIR=%h/ai/sysbridge
 # Environment=SYSBRIDGE_PYTHON=/usr/bin/python3
-# Environment=SYSBRIDGE_PORT=8182
+# Environment=SYSBRIDGE_PORT=8182     # if you skipped the port-80 sysctl
 # Environment=SYSBRIDGE_ROUTER_URL=http://127.0.0.1:8080

@@ -1,5 +1,5 @@
 [Unit]
-Description=sysbridge — localhost system probes and allowlisted actions for .html apps
+Description=sysbridge — http://localhost/ launcher for .html apps, system probes, allowlisted actions
 Documentation=https://github.com/fuzzy-logic/sysbridge
 # The bridge is useful without the router; this only orders startup when both exist.
 After=default.target
@@ -10,7 +10,10 @@ Type=simple
 # git pull does not clobber your paths. See sysbridge.service.d/local.conf.example.
 Environment=SYSBRIDGE_PYTHON=/usr/bin/python3
 Environment=SYSBRIDGE_DIR=%h/.local/share/sysbridge
-Environment=SYSBRIDGE_PORT=8182
+# 80 so the launcher is plain http://localhost/ . A user service may only bind
+# ports below 1024 after the one-time kernel setting in README → Install
+# (net.ipv4.ip_unprivileged_port_start = 80). Set 8182 here to skip that.
+Environment=SYSBRIDGE_PORT=80
 # The router whose presets the router_models probe stats. Leave as is for a
 # standard local-agent setup; the probe just reports an error if nothing answers.
 Environment=SYSBRIDGE_ROUTER_URL=http://127.0.0.1:8080
@@ -28,6 +31,10 @@ ProtectSystem=strict
 ProtectHome=read-only
 # %t is the per-user runtime dir (/run/user/UID) where the 0600 action token lives.
 ReadWritePaths=%t
+# Uploaded apps live in $STATE_DIRECTORY/apps (~/.local/state/sysbridge/apps).
+# StateDirectory, not ReadWritePaths: systemd creates it, so a fresh install
+# does not fail with 226/NAMESPACE, and it stays writable under ProtectHome.
+StateDirectory=sysbridge
 # xrt-smi may want a cache dir under the (read-only) home; point XDG_CACHE_HOME here.
 CacheDirectory=sysbridge
 Environment=XDG_CACHE_HOME=%C

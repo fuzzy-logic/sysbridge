@@ -1,12 +1,13 @@
 <!--
   llama-dash — what is my llama-server router doing right now?
 
-  One file. No build, no dependencies. Open it from file:// or serve it from
-  any localhost port (python -m http.server 8181). It talks straight to:
+  One file. No build, no dependencies. Normally served by sysbridge at
+  http://localhost/apps/llama-dash/ (a built-in app of the launcher), but it
+  also works opened from file:// or any localhost port. It talks straight to:
 
     router    http://127.0.0.1:8080   llama-server started with no -m (router mode)
     reviewer  http://127.0.0.1:8127   a single-model llama-server (optional)
-    bridge    http://127.0.0.1:8182   sysbridge, for GPU/RAM/disk (optional)
+    bridge    same origin / http://localhost   sysbridge, for GPU/RAM/disk (optional)
 
   Both llama-servers reflect any Origin (including "null" from file://), so
   a static page can call them directly. Endpoints live in the settings drawer
@@ -25,7 +26,9 @@
 -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>llama-dash</title>
+<title>Llama Dashboard</title>
+<meta name="description" content="What the llama-server router is doing right now: resident model, who is generating, GPU memory per process.">
+<meta name="app-icon" content="🦙">
 <style>
   :root {
     color-scheme: light dark;
@@ -94,7 +97,8 @@
 </style>
 
 <header>
-  <h1>llama-dash</h1>
+  <a id="homeLink" href="/" title="sysbridge launcher" style="text-decoration:none;color:inherit" hidden>⌂</a>
+  <h1>Llama Dashboard</h1>
   <span id="pausedFlag" class="paused" hidden>paused (tab hidden)</span>
   <span class="stamp">last refreshed <span id="stamp">—</span></span>
   <button id="settingsBtn" title="Endpoints and bridge token">Settings</button>
@@ -130,8 +134,8 @@
   <form method="dialog" id="settingsForm">
     <label>Router (llama-server, router mode)</label><input name="router" placeholder="http://127.0.0.1:8080">
     <label>Reviewer (single-model llama-server, optional — blank to disable)</label><input name="reviewer" placeholder="http://127.0.0.1:8127">
-    <label>Bridge (sysbridge, optional — blank to disable)</label><input name="bridge" placeholder="http://127.0.0.1:8182">
-    <label>Bridge token (only needed for bridge actions; from <code>python -m bridge --token</code>)</label><input name="token" autocomplete="off">
+    <label>Bridge (sysbridge, optional — blank to disable)</label><input name="bridge" placeholder="http://localhost">
+    <label>Bridge token (shared with the launcher and other apps; from <code>python -m bridge --token</code>)</label><input name="token" autocomplete="off">
     <div class="actions">
       <button type="button" id="settingsReset">Defaults</button>
       <button type="submit" class="primary">Save</button>
@@ -151,14 +155,25 @@
 <script>
 'use strict';
 // ---------------------------------------------------------------- settings
-const DEFAULTS = { router: 'http://127.0.0.1:8080', reviewer: 'http://127.0.0.1:8127', bridge: 'http://127.0.0.1:8182', token: '' };
-const LS_KEY = 'llama-dash.settings.v1';
+// Served by the bridge at /apps/llama-dash/ → the bridge is this page's own origin.
+// Opened from file:// or elsewhere → the launcher's default, http://localhost (port 80).
+const SERVED_BY_BRIDGE = location.pathname.startsWith('/apps/');
+const DEFAULTS = { router: 'http://127.0.0.1:8080', reviewer: 'http://127.0.0.1:8127',
+                   bridge: SERVED_BY_BRIDGE ? location.origin : 'http://localhost', token: '' };
+// Same-origin apps share one localStorage: own keys are prefixed app:<slug>:, the token key is shared on purpose.
+const LS_KEY = 'app:llama-dash:settings';
+const TOKEN_KEY = 'sysbridge.token';
 let S = loadSettings();
 function loadSettings() {
-  try { const s = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); return { ...DEFAULTS, ...s }; }
-  catch (e) { return { ...DEFAULTS }; }
+  let s = {}; try { s = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch (e) {}
+  let token = ''; try { token = localStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
+  return { ...DEFAULTS, ...s, token };
 }
-function saveSettings(s) { S = s; try { localStorage.setItem(LS_KEY, JSON.stringify(s)); } catch (e) {} }
+function saveSettings(s) {
+  S = s;
+  try { const { token, ...rest } = s; localStorage.setItem(LS_KEY, JSON.stringify(rest)); localStorage.setItem(TOKEN_KEY, token || ''); } catch (e) {}
+}
+if (SERVED_BY_BRIDGE) document.getElementById('homeLink').hidden = false;
 const trim = u => (u || '').trim().replace(/\/+$/, '');
 
 // ---------------------------------------------------------------- helpers

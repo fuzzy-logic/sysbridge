@@ -1,17 +1,43 @@
 ---
 name: sysbridge-client
-description: Build a single-file .html app that reads system data (GPU, RAM, disk, CPU, battery, NPU, GPU-holding processes, ports) from a local sysbridge service and, optionally, runs its allowlisted actions. Also documents the llama-server router endpoints a dashboard needs. Use when asked for a local dashboard, monitor, status page or control panel that must work from file:// with no build step.
+description: Build a single-file .html app for the sysbridge launcher at http://localhost/ — it reads system data (GPU, RAM, disk, CPU, battery, NPU, GPU-holding processes, ports) from the bridge, optionally runs its allowlisted actions, and is installed by uploading the file. Also documents the llama-server router endpoints a dashboard needs. Use when asked for a local dashboard, monitor, status page or control panel with no build step.
 ---
 
-# Building a client for sysbridge
+# Building an app for sysbridge
 
-sysbridge is a Python-stdlib service on `http://127.0.0.1:8182` that a static
-page can call directly from `file://` or any localhost port. It exists because
-a browser page cannot read `/sys`, `/proc` or run `rocm-smi` itself, and every
-existing GUI got its data by *owning* the process instead.
+sysbridge is a Python-stdlib service at `http://localhost/` (port 80; `--port
+8182` in dev). It serves a launcher of installed single-file `.html` apps at
+`/`, each app at `/apps/<slug>/`, and the API at `/v1/…` — all one origin. It
+exists because a browser page cannot read `/sys`, `/proc` or run `rocm-smi`
+itself, and every existing GUI got its data by *owning* the process instead.
 
-The dashboard in `apps/llama-dash/index.html` is the reference client. Copy its
-patterns rather than inventing new ones.
+The built-in dashboard `apps/llama-dash/index.html` is the reference app. Copy
+its patterns rather than inventing new ones.
+
+## What makes a file an app (conventions, no manifest to write)
+
+```html
+<title>Llama Manager</title>                                  <!-- tile name; slug = llama-manager -->
+<meta name="description" content="Herd the router's models">  <!-- tile subtitle -->
+<meta name="app-icon" content="🦙">                            <!-- tile icon; else initials -->
+```
+
+Install = upload the file in the launcher (＋ tile). Same title = replace
+(old copy goes to `.trash/`). It is then served at `/apps/llama-manager/`.
+Deliverable: **one `.html`**, inline CSS/JS, no CDN, no build.
+
+Because every app shares the bridge's origin:
+
+- **Bridge URL is `location.origin`** when `location.pathname` starts with
+  `/apps/`; fall back to `http://localhost` when opened from `file://`.
+- **`localStorage` is shared across apps.** Prefix your keys `app:<slug>:`.
+  Two keys are shared on purpose: `sysbridge.token` (the write credential the
+  user pasted once in the launcher) and `sysbridge.url` (blank = same origin).
+  Read the token from there; do not ask the user to paste it again unless it is missing.
+- A `<a href="/">⌂</a>` back to the launcher is polite; the browser's back
+  button also works.
+- Data the app must keep durably is not yours to store yet: `localStorage`
+  only, for now. A `/v1/kv/<slug>/…` storage API is the planned extension.
 
 ## Rules that are not optional
 
@@ -28,8 +54,8 @@ patterns rather than inventing new ones.
 5. **Never put the action token in a URL.** It goes in the `X-Bridge-Token`
    header, pasted once by the user into your settings drawer, kept in
    `localStorage`. The bridge never serves it.
-6. **Endpoints in a settings drawer, persisted in `localStorage`, with
-   defaults.** Users move ports.
+6. **Endpoints in a settings drawer, persisted in `localStorage` under
+   `app:<slug>:…`, with defaults.** Users move ports.
 7. **Pause polling when the tab is hidden** (`visibilitychange`); resume with a
    full refresh.
 8. **Plain HTML file.** No bundler, no framework, no CDN. Prefer
@@ -47,6 +73,9 @@ patterns rather than inventing new ones.
 | GET | `/v1/stream?names=…&interval_ms=1000` | SSE `event: probes`, data = same body as `/v1/all`; interval clamped 500–60000 ms; ≤ 4 clients |
 | GET | `/v1/actions` | `[{name, description, confirm}]`; **404 when no allowlist file** |
 | POST | `/v1/action/{name}` | `{ok, name, exit_code, stdout, stderr, ms}`; needs `X-Bridge-Token`; `{"confirm": true}` body when `confirm` |
+| GET | `/v1/apps` | installed apps `[{slug, title, description, icon, kind, url, builtin, installed_at, size}]` |
+| POST | `/v1/apps` | install: `text/html` body = the page (+ `X-Filename`), or JSON `{"kind":"link","url","title","icon"}`; token |
+| DELETE | `/v1/apps/{slug}` | uninstall to `.trash/`; token + `{"confirm": true}` |
 | OPTIONS | any | 204 preflight |
 
 **Envelope:** `{ok, name, ts, ttl_ms, stale, data|null, error:{type,message}|null}`.
@@ -76,16 +105,17 @@ call, so after warm-up no request waits on a subprocess.
 polls other servers (one scheduler, one paused-state); use `/v1/stream` for a
 page whose only source is the bridge. `EventSource` reconnects on its own.
 
-## Why `file://` works and a remote page cannot
+## Why an installed app and a `file://` page work and a remote page cannot
 
-The bridge reflects the request's `Origin` only when it is exactly `null`
-(what browsers send for `file://`), or matches
+An app served from `/apps/<slug>/` is same-origin: no CORS at all. For pages
+elsewhere, the bridge reflects the request's `Origin` only when it is exactly
+`null` (what browsers send for `file://`), or matches
 `http://(127.0.0.1|localhost|[::1])(:port)?`, or was passed with `--origins`.
 Anything else gets **403 with no CORS headers**, so a page served from the
 internet cannot read a byte even though it can reach the port. `curl` sends no
 Origin and is allowed — the bridge is protecting the browser, not the shell.
-Consequence for you: serve from `file://` or a localhost port; a `https://`
-dev server on localhost will be refused (the regex is `http://`).
+Consequence: during development serve from `file://` or a localhost `http://`
+port; then upload.
 
 ## The token paste flow for actions
 
@@ -107,7 +137,9 @@ input boxes that "add flags".
 ## Fetch helper to copy
 
 ```js
-const BRIDGE = { url: 'http://127.0.0.1:8182', token: '' };   // from your settings drawer
+const SERVED_BY_BRIDGE = location.pathname.startsWith('/apps/');
+const BRIDGE = { url: SERVED_BY_BRIDGE ? location.origin : 'http://localhost',
+                 token: (() => { try { return localStorage.getItem('sysbridge.token') || ''; } catch (e) { return ''; } })() };
 async function bridgeGet(path, timeout = 3000) {
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeout);
   try {
@@ -165,7 +197,9 @@ Verified on the EngramHalo.cpp fork, `build_info b1-c26c2ea`, 2026-09-22.
 
 ## Checklist before you call it done
 
-- [ ] Opens from `file://` **and** from `python -m http.server`; no console errors either way
+- [ ] Has `<title>`, `<meta name="description">`, `<meta name="app-icon">`; installs from the launcher and appears as a tile
+- [ ] Works served from `/apps/<slug>/` **and** opened from `file://`; no console errors either way
+- [ ] All `localStorage` keys prefixed `app:<slug>:` except the shared `sysbridge.token`
 - [ ] Bridge stopped → system panel hidden, everything else still works
 - [ ] Model server stopped → its card turns unhealthy, page keeps polling and recovers
 - [ ] `stale` badge visible when a probe fails after having worked

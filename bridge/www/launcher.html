@@ -1,0 +1,296 @@
+<!--
+  sysbridge launcher — the page at http://localhost/
+
+  A home screen for the .html apps installed on this bridge. Same origin as the
+  API, so apps never need a bridge URL and one pasted token (localStorage key
+  "sysbridge.token") serves the launcher and every app.
+
+  Install = upload one .html: the name is its <title>, the subtitle its
+  <meta name="description">, the icon <meta name="app-icon" content="🦙">.
+  Link tiles open any URL (the router's own UI on :8080, say). Uninstall moves
+  the app to .trash, it never deletes.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sysbridge</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --fg: #1c1f24; --muted: #6b7280; --card: #ffffff; --line: #e3e6ea;
+    --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --accent: #2563eb;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1216; --fg: #e5e7eb; --muted: #9aa3ad; --card: #171b21; --line: #262b33; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); min-height: 100vh; }
+  header { display: flex; align-items: center; gap: 1rem; padding: .7rem 1.2rem; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: .85rem; }
+  header .right { margin-left: auto; display: flex; gap: .5rem; align-items: center; }
+  main { padding: 1.5rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: 1.2rem; max-width: 70rem; margin: 0 auto; }
+  .tile { position: relative; display: flex; flex-direction: column; align-items: center; gap: .5rem; text-decoration: none; color: inherit;
+          padding: 1rem .6rem .8rem; border-radius: 1rem; border: 1px solid transparent; }
+  .tile:hover { background: var(--card); border-color: var(--line); }
+  .tile .icon { width: 4.2rem; height: 4.2rem; border-radius: 1.1rem; display: grid; place-items: center; font-size: 2.2rem;
+                background: var(--card); border: 1px solid var(--line); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .tile .icon.text { font-size: 1.4rem; font-weight: 700; color: var(--accent); }
+  .tile .icon.link::after { content: "↗"; position: absolute; font-size: .8rem; color: var(--muted); transform: translate(1.6rem, -1.6rem); }
+  .tile .name { font-weight: 600; text-align: center; overflow-wrap: anywhere; }
+  .tile .desc { color: var(--muted); font-size: .78rem; text-align: center; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .tile .more { position: absolute; top: .4rem; right: .4rem; opacity: 0; border: 0; background: var(--card); color: var(--muted); border-radius: .4rem; padding: 0 .4rem; cursor: pointer; font-size: 1rem; line-height: 1.4; }
+  .tile:hover .more, .tile:focus-within .more { opacity: 1; }
+  .tile.add .icon { border-style: dashed; color: var(--muted); font-size: 2rem; background: transparent; }
+  .muted { color: var(--muted); }
+  .err { color: var(--bad); white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
+  .err:empty { display: none; }
+  .ok { color: var(--ok); }
+  button { font: inherit; padding: .3rem .8rem; border-radius: .45rem; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.danger { background: var(--bad); color: #fff; border-color: var(--bad); }
+  dialog { border: 1px solid var(--line); border-radius: .8rem; background: var(--card); color: var(--fg); padding: 1.1rem 1.3rem; width: min(34rem, 92vw); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog h3 { margin: 0 0 .7rem; font-size: 1rem; }
+  dialog label { display: block; margin: .6rem 0 .15rem; font-size: .85rem; color: var(--muted); }
+  dialog input { width: 100%; font: inherit; padding: .35rem .5rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--bg); color: var(--fg); }
+  dialog .actions { display: flex; gap: .5rem; justify-content: flex-end; margin-top: 1rem; flex-wrap: wrap; }
+  dialog .actions .left { margin-right: auto; }
+  .tabs { display: flex; gap: .3rem; margin-bottom: .6rem; }
+  .tabs button[aria-selected="true"] { border-color: var(--accent); color: var(--accent); }
+  .drop { border: 2px dashed var(--line); border-radius: .6rem; padding: 1.2rem; text-align: center; color: var(--muted); cursor: pointer; }
+  .drop.over { border-color: var(--accent); color: var(--accent); }
+  .preview { display: flex; gap: .8rem; align-items: center; margin-top: .8rem; padding: .6rem .8rem; background: var(--bg); border-radius: .6rem; }
+  .preview .icon { width: 3rem; height: 3rem; border-radius: .8rem; display: grid; place-items: center; font-size: 1.6rem; background: var(--card); border: 1px solid var(--line); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: .2rem .8rem; font-size: .85rem; margin: .4rem 0; }
+  dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
+  code { font-size: .85em; background: var(--bg); padding: .05rem .3rem; border-radius: .3rem; }
+  [hidden] { display: none !important; }
+</style>
+
+<header>
+  <h1>sysbridge</h1>
+  <span class="sub" id="status">…</span>
+  <div class="right">
+    <button id="addBtn" title="Install an .html app or add a link">＋ Add</button>
+    <button id="settingsBtn" title="Token and bridge info">Settings</button>
+  </div>
+</header>
+<main>
+  <div class="err" id="err"></div>
+  <div class="grid" id="grid"></div>
+</main>
+
+<dialog id="addDlg">
+  <h3>Add an app</h3>
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="upload">Upload .html</button>
+    <button role="tab" aria-selected="false" data-tab="link">Link to a URL</button>
+  </div>
+  <div id="tab-upload">
+    <div class="drop" id="drop" tabindex="0">Drop a single <b>.html</b> file here, or click to choose.<br>
+      <span class="muted" style="font-size:.8rem">Name from its &lt;title&gt;, subtitle from &lt;meta name="description"&gt;, icon from &lt;meta name="app-icon" content="🦙"&gt;. Same title = replace (old copy goes to trash).</span></div>
+    <input type="file" id="file" accept=".html,.htm,text/html" hidden>
+    <div class="preview" id="preview" hidden><div class="icon" id="pIcon"></div><div><b id="pTitle"></b><div class="muted" id="pDesc"></div><div class="muted" id="pMeta" style="font-size:.78rem"></div></div></div>
+  </div>
+  <div id="tab-link" hidden>
+    <label>URL</label><input id="lUrl" placeholder="http://127.0.0.1:8080/">
+    <label>Name</label><input id="lTitle" placeholder="Router UI">
+    <label>Icon (an emoji, optional)</label><input id="lIcon" placeholder="🧭" maxlength="8">
+    <label>Description (optional)</label><input id="lDesc" placeholder="llama-server's built-in web UI">
+  </div>
+  <div class="err" id="addErr"></div>
+  <div class="actions"><button type="button" id="addCancel">Cancel</button><button type="button" class="primary" id="addGo" disabled>Install</button></div>
+</dialog>
+
+<dialog id="appDlg">
+  <h3 id="aTitle"></h3>
+  <dl id="aInfo"></dl>
+  <div class="err" id="aErr"></div>
+  <div class="actions">
+    <button type="button" class="danger left" id="aUninstall">Uninstall…</button>
+    <button type="button" id="aClose">Close</button>
+    <a id="aOpen"><button type="button" class="primary">Open</button></a>
+  </div>
+</dialog>
+
+<dialog id="confirmDlg">
+  <h3 id="cTitle"></h3>
+  <p id="cBody"></p>
+  <div class="actions"><button type="button" id="cNo">Cancel</button><button type="button" class="danger" id="cYes">Uninstall</button></div>
+</dialog>
+
+<dialog id="settingsDlg">
+  <h3>Settings</h3>
+  <dl id="sInfo"></dl>
+  <label>Bridge token — needed to install or uninstall apps and to run actions. Shared with every app on this origin.</label>
+  <input id="sToken" autocomplete="off" spellcheck="false">
+  <div class="muted" style="font-size:.8rem;margin-top:.3rem">Get it with <code>python -m bridge --token</code> (it lives in <code>$XDG_RUNTIME_DIR/sysbridge/token</code> and is never served over HTTP).</div>
+  <div class="actions"><button type="button" id="sClose">Close</button><button type="button" class="primary" id="sSave">Save</button></div>
+</dialog>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const TOKEN_KEY = 'sysbridge.token';
+const token = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; } };
+const fmtBytes = n => n == null ? '—' : n >= 1048576 ? (n / 1048576).toFixed(1) + ' MiB' : n >= 1024 ? (n / 1024).toFixed(0) + ' KiB' : n + ' B';
+
+async function api(method, path, { body, headers = {}, timeout = 8000 } = {}) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const r = await fetch(path, { method, body, headers, signal: ctl.signal, cache: 'no-store' });
+    const text = await r.text(); let j = null; try { j = text ? JSON.parse(text) : null; } catch (e) { j = { raw: text }; }
+    if (!r.ok) { const e = new Error(j?.error?.message || `HTTP ${r.status}`); e.status = r.status; e.type = j?.error?.type; throw e; }
+    return j;
+  } finally { clearTimeout(t); }
+}
+const authed = () => ({ 'X-Bridge-Token': token() });
+
+// ---------------------------------------------------------------- grid
+let apps = [];
+async function refresh() {
+  try {
+    const [health, list] = await Promise.all([api('GET', '/v1/health'), api('GET', '/v1/apps')]);
+    apps = list; $('err').textContent = '';
+    $('status').innerHTML = `${apps.length} app${apps.length === 1 ? '' : 's'} · bridge ${esc(health.version)} · ${health.probes.length} probes` +
+      (health.actions_enabled ? ' · actions on' : '');
+  } catch (e) { $('err').textContent = `bridge not answering: ${e.message}`; }
+  render();
+}
+function iconHTML(a, cls = 'icon') {
+  const isEmoji = /\p{Extended_Pictographic}/u.test(a.icon || '');
+  return `<div class="${cls}${isEmoji ? '' : ' text'}${a.kind === 'link' ? ' link' : ''}">${esc(a.icon || '?')}</div>`;
+}
+function render() {
+  const tiles = apps.map(a => `<a class="tile" href="/apps/${esc(a.slug)}/" data-slug="${esc(a.slug)}" ${a.kind === 'link' ? 'target="_blank" rel="noopener"' : ''}>
+      ${iconHTML(a)}<div class="name">${esc(a.title)}</div><div class="desc">${esc(a.description || (a.kind === 'link' ? a.url : ''))}</div>
+      <button class="more" data-more="${esc(a.slug)}" title="Details">⋯</button></a>`);
+  tiles.push(`<a class="tile add" href="#" id="addTile"><div class="icon">＋</div><div class="name muted">Add</div></a>`);
+  $('grid').innerHTML = tiles.join('');
+}
+$('grid').addEventListener('click', e => {
+  const more = e.target.closest('button[data-more]');
+  if (more) { e.preventDefault(); e.stopPropagation(); openApp(more.dataset.more); return; }
+  if (e.target.closest('#addTile')) { e.preventDefault(); openAdd(); }
+});
+
+// ---------------------------------------------------------------- app details / uninstall
+function openApp(slug) {
+  const a = apps.find(x => x.slug === slug); if (!a) return;
+  $('aTitle').innerHTML = `${iconHTML(a, 'icon')} ${esc(a.title)}`; $('aTitle').style.display = 'flex'; $('aTitle').style.gap = '.6rem'; $('aTitle').style.alignItems = 'center';
+  $('aTitle').querySelector('.icon').style.cssText = 'width:2.2rem;height:2.2rem;font-size:1.3rem;border-radius:.6rem';
+  const rows = [['url', `<code>/apps/${esc(a.slug)}/</code>${a.kind === 'link' ? ' → ' + esc(a.url) : ''}`], ['kind', a.builtin ? 'built-in (ships with the bridge)' : a.kind]];
+  if (a.description) rows.push(['description', esc(a.description)]);
+  if (a.installed_at) rows.push(['installed', esc(a.installed_at)]);
+  if (a.kind === 'html') rows.push(['size', fmtBytes(a.size)]);
+  if (a.original_filename) rows.push(['uploaded as', esc(a.original_filename)]);
+  if (a.sha256) rows.push(['sha256', `<code>${esc(a.sha256.slice(0, 16))}…</code>`]);
+  rows.push(['storage', `browser localStorage under <code>app:${esc(a.slug)}:</code>`]);
+  $('aInfo').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  $('aErr').textContent = '';
+  $('aOpen').href = `/apps/${a.slug}/`; if (a.kind === 'link') { $('aOpen').target = '_blank'; } else { $('aOpen').removeAttribute('target'); }
+  $('aUninstall').disabled = !!a.builtin; $('aUninstall').title = a.builtin ? 'built-in apps cannot be uninstalled' : '';
+  $('aUninstall').onclick = () => uninstall(a);
+  $('appDlg').showModal();
+}
+$('aClose').onclick = () => $('appDlg').close();
+async function uninstall(a) {
+  $('cTitle').textContent = `Uninstall ${a.title}?`;
+  $('cBody').innerHTML = `The app is moved to <code>.trash/</code> on the bridge, not deleted — it can be restored by hand. Its browser data under <code>app:${esc(a.slug)}:</code> stays in this browser.`;
+  const ok = await confirmDlg();
+  if (!ok) return;
+  try {
+    await api('DELETE', `/v1/apps/${a.slug}`, { body: JSON.stringify({ confirm: true }), headers: { ...authed(), 'Content-Type': 'application/json' } });
+    $('appDlg').close(); await refresh();
+  } catch (e) { $('aErr').textContent = describe(e); if (e.status === 401) openSettings(); }
+}
+function confirmDlg() {
+  const d = $('confirmDlg');
+  return new Promise(res => {
+    const yes = () => { done(true); }, no = () => { done(false); };
+    const done = v => { $('cYes').removeEventListener('click', yes); $('cNo').removeEventListener('click', no); d.removeEventListener('close', no); d.close(); res(v); };
+    $('cYes').addEventListener('click', yes); $('cNo').addEventListener('click', no); d.addEventListener('close', no); d.showModal();
+  });
+}
+const describe = e => e.status === 401 ? 'The bridge wants a token. Paste it in Settings (python -m bridge --token).' :
+  e.status === 403 ? 'Refused: this page is not on an allowed origin, or the app is built in.' : e.message;
+
+// ---------------------------------------------------------------- add: upload or link
+let pending = null; // { kind:'html', text, filename } | { kind:'link' }
+function openAdd() { pending = null; $('addErr').textContent = ''; $('preview').hidden = true; $('file').value = ''; $('addGo').disabled = true; selectTab('upload'); $('addDlg').showModal(); }
+function selectTab(name) {
+  for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
+  $('tab-upload').hidden = name !== 'upload'; $('tab-link').hidden = name !== 'link';
+  $('addGo').textContent = name === 'link' ? 'Add link' : 'Install';
+  $('addGo').disabled = name === 'upload' ? !pending : false;
+}
+document.querySelector('.tabs').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if (b) selectTab(b.dataset.tab); });
+$('addBtn').onclick = openAdd; $('addCancel').onclick = () => $('addDlg').close();
+$('drop').onclick = () => $('file').click();
+$('drop').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') $('file').click(); };
+$('drop').ondragover = e => { e.preventDefault(); $('drop').classList.add('over'); };
+$('drop').ondragleave = () => $('drop').classList.remove('over');
+$('drop').ondrop = e => { e.preventDefault(); $('drop').classList.remove('over'); if (e.dataTransfer.files[0]) pick(e.dataTransfer.files[0]); };
+$('file').onchange = () => { if ($('file').files[0]) pick($('file').files[0]); };
+
+// Client-side twin of bridge/apps.py parse_html_meta, for the preview only — the bridge decides.
+function parseMeta(text, fallback) {
+  const head = text.slice(0, 65536);
+  const doc = new DOMParser().parseFromString(head, 'text/html');
+  const title = (doc.querySelector('title')?.textContent || '').replace(/\s+/g, ' ').trim() || fallback;
+  const desc = doc.querySelector('meta[name="description" i]')?.getAttribute('content')?.trim() || '';
+  const icon = doc.querySelector('meta[name="app-icon" i]')?.getAttribute('content')?.trim() || initials(title);
+  return { title, description: desc, icon };
+}
+const initials = t => { const w = t.trim().split(/[\s_-]+/).filter(Boolean); return !w.length ? '?' : w.length === 1 ? w[0].slice(0, 2).toUpperCase() : (w[0][0] + w[1][0]).toUpperCase(); };
+async function pick(file) {
+  $('addErr').textContent = '';
+  if (file.size > 4 * 1024 * 1024) { $('addErr').textContent = 'over the 4 MiB limit'; return; }
+  const text = await file.text();
+  const fallback = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
+  const m = parseMeta(text, fallback);
+  pending = { kind: 'html', text, filename: file.name };
+  const isEmoji = /\p{Extended_Pictographic}/u.test(m.icon);
+  $('pIcon').textContent = m.icon; $('pIcon').style.fontSize = isEmoji ? '1.6rem' : '1rem';
+  $('pTitle').textContent = m.title; $('pDesc').textContent = m.description || '(no description meta)';
+  const slug = m.title.normalize('NFKD').replace(/[^\x00-\x7f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  const exists = apps.find(a => a.slug === slug);
+  $('pMeta').textContent = `${file.name} · ${fmtBytes(file.size)} · will be /apps/${slug}/` + (exists ? (exists.builtin ? ' — clashes with a built-in app' : ' — replaces the installed copy') : '');
+  $('preview').hidden = false; $('addGo').disabled = false;
+}
+$('addGo').onclick = async () => {
+  $('addErr').textContent = ''; $('addGo').disabled = true;
+  try {
+    const linkTab = !$('tab-link').hidden;
+    if (linkTab) {
+      await api('POST', '/v1/apps', { body: JSON.stringify({ kind: 'link', url: $('lUrl').value.trim(), title: $('lTitle').value.trim(), icon: $('lIcon').value.trim(), description: $('lDesc').value.trim() }),
+        headers: { ...authed(), 'Content-Type': 'application/json' } });
+    } else {
+      if (!pending) return;
+      await api('POST', '/v1/apps', { body: pending.text, headers: { ...authed(), 'Content-Type': 'text/html', 'X-Filename': encodeURIComponent(pending.filename) }, timeout: 20000 });
+    }
+    $('addDlg').close(); await refresh();
+  } catch (e) { $('addErr').textContent = describe(e); if (e.status === 401) openSettings(); }
+  finally { $('addGo').disabled = false; }
+};
+
+// ---------------------------------------------------------------- settings
+async function openSettings() {
+  $('sToken').value = token();
+  let info = [];
+  try { const h = await api('GET', '/v1/health'); info = [['bridge', `${esc(h.version)} · up ${Math.round(h.uptime_s / 60)} min`], ['origin', esc(location.origin)], ['probes', esc(h.probes.join(', '))], ['actions', h.actions_enabled ? 'enabled' : 'disabled (no ~/.config/sysbridge/actions.json)']]; }
+  catch (e) { info = [['bridge', `<span class="err">${esc(e.message)}</span>`]]; }
+  $('sInfo').innerHTML = info.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  if (!$('settingsDlg').open) $('settingsDlg').showModal();
+}
+$('settingsBtn').onclick = openSettings; $('sClose').onclick = () => $('settingsDlg').close();
+$('sSave').onclick = () => { try { localStorage.setItem(TOKEN_KEY, $('sToken').value.trim()); } catch (e) {} $('settingsDlg').close(); };
+
+refresh();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+</script>
