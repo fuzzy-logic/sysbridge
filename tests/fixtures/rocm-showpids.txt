@@ -1,0 +1,13 @@
+WARNING: AMD GPU device(s) is/are in a low-power state. Check power control/runtime_status
+
+
+
+============================ ROCm System Management Interface ============================
+===================================== KFD Processes ======================================
+KFD process information:
+PID    	PROCESS NAME	GPU(s)	VRAM USED  	SDMA USED	CU OCCUPANCY	
+1845787	llama-server	0     	0          	0        	UNKNOWN     	
+1845878	llama-server	1     	26990665728	0        	UNKNOWN     	
+1671135	llama-server	1     	4123750400 	0        	UNKNOWN     	
+==========================================================================================
+================================== End of ROCm SMI Log ===================================
