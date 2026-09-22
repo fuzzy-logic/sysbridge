@@ -5,6 +5,7 @@ import unittest
 
 from bridge.registry import Registry
 from bridge.util import hwmon_by_name, first_amdgpu_card
+from bridge.probes import gguf_size
 
 
 class RegistryTests(unittest.TestCase):
@@ -108,6 +109,18 @@ class UtilTests(unittest.TestCase):
             self.assertEqual(first_amdgpu_card(root), d)
         with tempfile.TemporaryDirectory() as root:
             self.assertIsNone(first_amdgpu_card(root))
+
+    def test_gguf_size_sums_shards(self):
+        with tempfile.TemporaryDirectory() as d:
+            for i, n in [(1, 10), (2, 300), (3, 200)]:
+                with open(os.path.join(d, f"M-UD-IQ4_XS-{i:05d}-of-00003.gguf"), "wb") as f:
+                    f.write(b"x" * n)
+            with open(os.path.join(d, "single.gguf"), "wb") as f:
+                f.write(b"y" * 7)
+            self.assertEqual(gguf_size(os.path.join(d, "M-UD-IQ4_XS-00001-of-00003.gguf")), (510, 3))
+            self.assertEqual(gguf_size(os.path.join(d, "single.gguf")), (7, 1))
+            self.assertEqual(gguf_size(os.path.join(d, "missing.gguf")), (None, 0))
+            self.assertEqual(gguf_size(None), (None, 0))
 
 
 if __name__ == "__main__":

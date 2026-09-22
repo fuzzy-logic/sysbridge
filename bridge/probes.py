@@ -10,6 +10,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import time
 import urllib.request
 from typing import Optional
@@ -255,20 +256,42 @@ def router_models() -> dict:
     for m in body.get("data", []) or []:
         st = m.get("status") or {}
         preset = parsers.parse_ini_preset(st.get("preset") or "")
+        size, shards = gguf_size(preset.get("model"))
         row = {"id": m.get("id"), "status": st.get("value"), "model_path": preset.get("model"),
                "mmproj_path": preset.get("mmproj"), "ctx_size": _int_or_none(preset.get("ctx-size")),
-               "size_bytes": _stat_size(preset.get("model")), "mmproj_size_bytes": _stat_size(preset.get("mmproj"))}
+               "size_bytes": size, "shards": shards, "mmproj_size_bytes": gguf_size(preset.get("mmproj"))[0]}
         models.append(row)
     return {"url": ROUTER_URL, "models": models}
 
 
-def _stat_size(path: Optional[str]) -> Optional[int]:
+_SHARD_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
+
+
+def gguf_size(path: Optional[str]) -> tuple[Optional[int], int]:
+    """(total bytes, shard count) for a GGUF path; split files are summed.
+
+    A router preset names only the first shard (``…-00001-of-00003.gguf``,
+    10 MiB on the reference machine) while llama-server mmaps all of them
+    (94 GiB). Reporting the first shard alone would be badly misleading.
+    """
     if not path:
-        return None
-    try:
-        return os.stat(os.path.expanduser(path)).st_size
-    except OSError:
-        return None
+        return None, 0
+    path = os.path.expanduser(path)
+    m = _SHARD_RE.match(os.path.basename(path))
+    if not m:
+        try:
+            return os.stat(path).st_size, 1
+        except OSError:
+            return None, 0
+    stem, _, n = m.group(1), m.group(2), int(m.group(3))
+    total, found = 0, 0
+    for i in range(1, n + 1):
+        try:
+            total += os.stat(os.path.join(os.path.dirname(path), f"{stem}-{i:05d}-of-{n:05d}.gguf")).st_size
+            found += 1
+        except OSError:
+            continue
+    return (total if found else None), found
 
 
 def _int_or_none(s: Optional[str]) -> Optional[int]:

@@ -298,7 +298,7 @@ function renderModels() {
         ? `<button data-act="load" data-id="${esc(m.id)}" ${disabled ? 'disabled' : ''}>Load</button>`
         : '<span class="muted">…</span>';
     const details = `<details data-id="${esc(m.id)}"${isOpen}><summary>details</summary>` +
-      (bi?.model_path ? `<div class="muted" style="font-size:.75rem;margin-top:.3rem">file: ${esc(bi.model_path)}${bi.mmproj_path ? ' + mmproj ' + fmtBytes(bi.mmproj_size_bytes) : ''}</div>` : '') +
+      (bi?.model_path ? `<div class="muted" style="font-size:.75rem;margin-top:.3rem">file: ${esc(bi.model_path)}${bi.shards > 1 ? ` (${bi.shards} shards, ${fmtBytes(bi.size_bytes)} total)` : ''}${bi.mmproj_path ? ' + mmproj ' + fmtBytes(bi.mmproj_size_bytes) : ''}</div>` : '') +
       `<pre>${esc(m.status?.preset || '(no preset)')}</pre>` +
       (m.status?.args?.length ? `<pre>${esc(m.status.args.join(' \\\n  '))}</pre>` : '') + `</details>`;
     return `<tr><td><b>${esc(m.id)}</b>${details}</td><td><span class="pill ${esc(st)}">${esc(st)}</span></td>` +
