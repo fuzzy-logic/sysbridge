@@ -1,8 +1,8 @@
 Filesystem               Type         1B-blocks         Used        Avail Mounted on
 efivarfs                 efivarfs        251804       108892       137792 /sys/firmware/efi/efivars
-/dev/mapper/omarchy_root btrfs    1151268290560 792692703232 356050665472 /
-/dev/mapper/omarchy_root btrfs    1151268290560 792692703232 356050665472 /var/cache/pacman/pkg
-/dev/mapper/omarchy_root btrfs    1151268290560 792692703232 356050665472 /var/log
-/dev/mapper/omarchy_root btrfs    1151268290560 792692703232 356050665472 /home
-/dev/mapper/omarchy_root btrfs    1151268290560 792692703232 356050665472 /home/user/Games
+/dev/mapper/root btrfs    1151268290560 792692703232 356050665472 /
+/dev/mapper/root btrfs    1151268290560 792692703232 356050665472 /var/cache/pacman/pkg
+/dev/mapper/root btrfs    1151268290560 792692703232 356050665472 /var/log
+/dev/mapper/root btrfs    1151268290560 792692703232 356050665472 /home
+/dev/mapper/root btrfs    1151268290560 792692703232 356050665472 /home/user/Games
 /dev/nvme0n1p5           vfat        2143281152    227295232   1915985920 /boot

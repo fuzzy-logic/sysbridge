@@ -15,7 +15,7 @@ Upstreams come from SYSBRIDGE_LLAMA_SERVERS, "name=url,name=url"; default
 "router=http://127.0.0.1:8080,reviewer=http://127.0.0.1:8127". Names match
 ^[a-z0-9_-]{1,32}$ and become URL segments.
 
-Footguns encoded here (verified 2026-09-22, EngramHalo.cpp build b1-c26c2ea):
+Footguns encoded here (verified against a llama.cpp router build, 2026-09-22):
 every router GET carries autoload=false because GET /props?model=<unloaded>
 loads that model; a single-model server ignores the flag. Under --models-max 1
 a load evicts the resident model — the caller states that in its confirm.

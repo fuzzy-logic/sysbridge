@@ -7,7 +7,7 @@ average). The first sample after start therefore reports 0 % for everyone.
 
 Per call: /proc/stat (per-core), /proc/meminfo, /proc/loadavg, /proc/uptime,
 and for every pid /proc/<pid>/stat, /status (VmRSS, Threads, Uid) and /cmdline.
-~5 000 processes cost roughly 60–120 ms of Python on the reference machine,
+A few thousand processes cost on the order of 100 ms of Python,
 hence ttl 1500 ms and async refresh so no request ever waits on it.
 """
 from __future__ import annotations

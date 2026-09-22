@@ -27,7 +27,7 @@ def parse_df(text: str) -> list[dict]:
     """``df -B1 --output=source,fstype,size,used,avail,target`` → deduped rows.
 
     btrfs shows one line per mounted subvolume, all with the same source and
-    the same numbers (5× on the reference machine). Keep one row per source:
+    the same numbers. Keep one row per source:
     the one with the shortest mount target, which is the filesystem root when
     it is mounted. Pseudo filesystems that df still prints (efivarfs) are kept
     only when they are real block devices or a named non-pseudo type.

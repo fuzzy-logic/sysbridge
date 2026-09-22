@@ -97,7 +97,7 @@ def hwmon_by_name(name: str, root: str = "/sys/class/hwmon") -> Optional[str]:
 def first_amdgpu_card(root: str = "/sys/class/drm") -> Optional[str]:
     """Device dir of the first DRM card that exposes ``mem_info_vram_total``.
 
-    Never hardcode ``card0``: on the reference machine the iGPU is ``card1``
+    Never hardcode ``card0``: on some machines the iGPU is ``card1``
     and there is no ``card0`` at all. Connector dirs (card1-eDP-1, …) have no
     ``device/mem_info_*`` so the glob skips them naturally.
     """

@@ -51,33 +51,37 @@ http://<any>.localhost/v1/...        the API, answered on every host: an app cal
              →  llama-server router :8080, reviewer :8127   (SYSBRIDGE_LLAMA_SERVERS)
 ```
 
-## What is measured, and why the design looks like this
+## Why the design looks like this
 
-Everything below was checked on the reference machine (AMD Strix Halo APU,
-128 GB unified memory, Arch, kernel 7.1) on 2026-09-22. The full list, with
-numbers, is in [HANDOVER.md](HANDOVER.md).
+These are the behaviours, all reproducible on any Linux box with the same
+software, that shaped the bridge. Each one cost time to discover; the code
+carries them as comments so nobody discovers them twice.
 
 - **Existing llama.cpp GUIs are launchers.** They see the model because they
   started the process. None reads the router's `/models`, so none can tell you
   what a router *someone else started* is doing. This one only reads the API.
 - **`GET /props?model=X` loads model X** unless `?autoload=false`. A monitoring
-  page that forgets this evicts your working model. Every router GET here
-  carries the flag; the skill tells the next app to do the same.
+  page that forgets this evicts your working model. Every router GET the bridge
+  makes carries the flag, and apps never talk to llama-server directly.
 - **`gpu_busy_percent` is not activity** on a unified-memory APU — it reads
   100 % whenever a model is merely resident. `/slots` is the activity signal;
   the GPU number is shown with that caveat attached.
-- **fdinfo undercounts ROCm** (6 MiB reported vs 25 GiB actually held), so
-  per-process GPU memory comes from `rocm-smi --showpids` (~200 ms, cached and
-  refreshed in the background), and the fdinfo figure is labelled.
-- **GTT is RAM.** The iGPU has no memory of its own; the 96 GiB GTT ceiling is
-  carved from the same 128 GB. The `ram` probe reports both together and the
-  dashboard draws GTT as an overlay on the RAM bar, not as a second pool.
-- **`df` prints a btrfs filesystem once per subvolume** (5× here). Rows are
-  deduped by device.
+- **fdinfo undercounts ROCm** by orders of magnitude, so per-process GPU
+  memory comes from `rocm-smi --showpids` (cached, refreshed in the
+  background), and the fdinfo figure is labelled.
+- **GTT is RAM.** On an APU the GPU has no memory of its own; GTT is carved
+  from system RAM. The `ram` probe reports both together and the dashboard
+  draws GTT as an overlay on the RAM bar, not as a second pool.
+- **`df` prints a btrfs filesystem once per subvolume.** Rows are deduped by
+  device.
 - **`/models/sse` sends nothing until something changes.** Snapshot first, use
   the stream as a refresh signal, keep a poll as fallback.
-- **A router preset names only the first shard** of a split GGUF (10 MiB of a
-  94 GiB model). The `router_models` probe sums the shards.
+- **A router preset names only the first shard** of a split GGUF, which can be
+  a few megabytes of a model that is tens of gigabytes. The `router_models`
+  probe sums the shards.
+- **The DRM card index and hwmon index are not stable** across machines or
+  boots. The bridge finds the GPU by the presence of `mem_info_vram_total` and
+  the sensors by their `name` file, never by number.
 
 ## Install
 

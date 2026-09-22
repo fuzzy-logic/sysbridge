@@ -1,7 +1,7 @@
 """One decorated function per data point. Each returns plain JSON data.
 
-Sources and their quirks were measured on an AMD Strix Halo APU (Ryzen AI MAX+
-395, Radeon 8060S, 128 GB unified memory) on 2026-09-22; see HANDOVER.md. Every
+Sources and their quirks were measured on a unified-memory AMD APU with
+ROCm; see HANDOVER.md. Every
 probe degrades to an error envelope rather than guessing when a source is
 missing, so the same code runs on a machine with no GPU at all.
 """
@@ -223,7 +223,7 @@ def kfd_holders() -> dict:
             "fdinfo_kib": {"gtt": mem.get("drm-memory-gtt"), "vram": mem.get("drm-memory-vram"), "cpu": mem.get("drm-memory-cpu")},
         })
     return {"processes": sorted(procs, key=lambda p: p["pid"]),
-            "note": "fdinfo drm-memory-* undercounts ROCm/HIP allocations (6 MiB vs 25 GiB measured); use rocm_pids for the real number"}
+            "note": "fdinfo drm-memory-* undercounts ROCm/HIP allocations by orders of magnitude; use rocm_pids for the real number"}
 
 
 # ------------------------------------------------------------------ processes
@@ -271,9 +271,10 @@ _SHARD_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
 def gguf_size(path: Optional[str]) -> tuple[Optional[int], int]:
     """(total bytes, shard count) for a GGUF path; split files are summed.
 
-    A router preset names only the first shard (``…-00001-of-00003.gguf``,
-    10 MiB on the reference machine) while llama-server mmaps all of them
-    (94 GiB). Reporting the first shard alone would be badly misleading.
+    A router preset names only the first shard (``…-00001-of-00003.gguf``),
+    which can be a few megabytes of a model that is tens of gigabytes, while
+    llama-server mmaps all of them. Reporting the first shard alone would be
+    badly misleading.
     """
     if not path:
         return None, 0

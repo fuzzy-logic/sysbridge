@@ -11,7 +11,7 @@ Defaults, each with its reason:
   --port 80       so the launcher is http://localhost/ — the whole point is not
                   remembering ports. Needs net.ipv4.ip_unprivileged_port_start=80
                   (README → Install). 8182 was the pre-launcher default and is
-                  still free on the reference machine (8080 router, 8127 reviewer).
+                  clear of the usual llama-server ports (8080 router, 8127 reviewer).
   --bind 127.0.0.1  the bridge reads /proc and runs commands as you; it must
                   never be reachable from another host. Binding elsewhere is
                   deliberately not offered.

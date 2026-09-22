@@ -67,7 +67,7 @@ Because every app shares the bridge's origin:
    full refresh.
 8. **Plain HTML file.** No bundler, no framework, no CDN. Prefer
    `prefers-color-scheme` for dark/light. Relative units — the reference
-   laptop panel is only 1440×900 logical pixels.
+   users run laptops with small logical resolutions.
 
 ## API (`/v1`)
 
@@ -187,7 +187,7 @@ async function bridgeAction(name, confirm = true) {
 
 ## llama-server endpoints, for the bridge side (apps use the probes above)
 
-Verified on the EngramHalo.cpp fork, `build_info b1-c26c2ea`, 2026-09-22.
+Verified against a llama.cpp router build, 2026-09-22.
 These are what `bridge/llama.py` calls; an app never needs them directly.
 
 - **CORS**: llama-server reflects any Origin including `null`; methods

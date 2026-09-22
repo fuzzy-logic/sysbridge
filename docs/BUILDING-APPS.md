@@ -38,7 +38,7 @@ Rules, each with its reason:
 | **Do not draw a home link.** | The bridge appends a slide-out ⌂ tab (Home, every installed app) to every app page, half off-screen at the edge the user chose in Settings. Keep that edge's centre clear of controls that must be hit precisely. Opt out only if you draw your own: `<meta name="sysbridge-home" content="none">`. |
 | Poll with **one** `/v1/all?names=…` per tick, asking only for what you draw. Pause when the tab is hidden. | Each probe is cached at its own TTL; one request a second is cheap, ten are not. |
 | Show `stale`. Keep the last good view when a request fails. Hide a panel entirely when its source is gone. | A dead upstream must degrade the page, never break it. Never show `NaN` or empty bars. |
-| Respect `prefers-color-scheme`; use relative units. | Users run dark desktops; the reference laptop panel is 1440×900 logical pixels. |
+| Respect `prefers-color-scheme`; use relative units. | Users run dark desktops and laptops with small logical resolutions. |
 | Keep app state in `localStorage`. Any key names. | Your origin's storage is yours alone. (On the `/apps/<slug>/` fallback apps share one origin, so the shipped apps still prefix `app:<slug>:`.) A `/v1/kv/<slug>/…` durable store is planned, not built. |
 
 ## 2. Getting the app onto the launcher

@@ -15,7 +15,7 @@
   Load/Unload go through POST /v1/llama/<server>/load|unload with the shared
   bridge token, behind a dialog that states what gets evicted.
 
-  Footguns this page is built around (verified 2026-09-22, build b1-c26c2ea):
+  Footguns this page is built around (verified against a llama.cpp router build, 2026-09-22):
     * /props?model=<unloaded> LOADS that model — the bridge sends autoload=false
       on every router GET, so no page can trigger it by accident.
     * Under --models-max 1, load evicts the resident model. The confirm says so.
