@@ -37,6 +37,8 @@ def main(argv=None) -> int:
     ap.add_argument("--actions-file", default=None, help="override the allowlist path (default ~/.config/sysbridge/actions.json)")
     ap.add_argument("--no-token-inject", action="store_true",
                     help="do not write the ordinary token into served pages' localStorage; users paste it in the launcher instead")
+    ap.add_argument("--fs-strict", action="store_true",
+                    help="filesystem API accepts only the separate token-sensitive (never injected into pages); Web-File then prompts for it")
     ap.add_argument("--apps-root", default=None, help="where uploaded apps live (default $STATE_DIRECTORY/apps or ~/.local/state/sysbridge/apps)")
     ap.add_argument("--once", metavar="NAME", help="run one probe, print its envelope as JSON, exit 0/1")
     ap.add_argument("--list", action="store_true", help="list probes and exit")
@@ -55,11 +57,12 @@ def main(argv=None) -> int:
     if a.token:
         p, q = token_path(), sensitive_token_path()
         print(f"token            {ensure_token(p)}   ({p})\n"
-              f"token-sensitive  {ensure_token(q)}   ({q})  — filesystem access; type it, never store it")
+              f"token-sensitive  {ensure_token(q)}   ({q})  — only needed with --fs-strict; never injected into pages")
         return 0
 
     cfg = Config(bind=a.bind, port=a.port, extra_origins=list(a.origins), actions_file=a.actions_file, apps_root=a.apps_root,
-                 inject_token=not (a.no_token_inject or os.environ.get("SYSBRIDGE_TOKEN_INJECT", "1") == "0"))
+                 inject_token=not (a.no_token_inject or os.environ.get("SYSBRIDGE_TOKEN_INJECT", "1") == "0"),
+                 fs_strict=a.fs_strict or os.environ.get("SYSBRIDGE_FS_STRICT", "0") == "1")
     try:
         serve(cfg)
     except KeyboardInterrupt:

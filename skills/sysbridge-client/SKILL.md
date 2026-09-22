@@ -104,7 +104,7 @@ Because every app shares the bridge's origin:
 Other endpoints apps use: `POST /v1/llama/<server>/chat` (OpenAI-style body,
 streams SSE back, **loaded models only**, no token — ChatBridge is the pattern);
 `GET /v1/store`, `POST /v1/store/<slug>/install` (token); `GET /v1/fs/…`
-(sensitive token; read-only; Web-File is the pattern).
+(read-only; ordinary token, or the sensitive one under `--fs-strict`; Web-File is the pattern).
 
 **Do not call llama-server from an app.** Read the `llama`/`llama_slots` probes
 and `POST /v1/llama/<server>/load|unload` `{"model", "confirm": true}` with the

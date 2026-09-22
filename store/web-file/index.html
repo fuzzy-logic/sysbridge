@@ -1,14 +1,16 @@
 <!--
   Web-File — a read-only file browser for the allowed roots (your home by default).
   A sysbridge store app: one file, talks only to its own origin.
-    GET /v1/fs/roots | ls?path= | read?path= | download?path=      all need X-Bridge-Sensitive-Token
-  The sensitive token is typed each session and kept in page memory only — never
-  in localStorage, never in a URL. Roots and hidden-file policy: ~/.config/sysbridge/fs.json.
+    GET /v1/fs/roots | ls?path= | read?path= | download?path=
+  Uses the bridge token the bridge wrote into this page's localStorage, so it
+  just opens. If the bridge runs with --fs-strict it answers 401 to that token
+  and this app asks for the separate sensitive token, kept in page memory only.
+  Roots and hidden-file policy: ~/.config/sysbridge/fs.json.
 -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Web-File</title>
-<meta name="description" content="Browse and preview files under the allowed roots (your home by default). Read-only; needs the sensitive token each session.">
+<meta name="description" content="Browse and preview files under the allowed roots (your home by default). Read-only.">
 <meta name="app-icon" content="📁">
 <meta name="app-version" content="1.0">
 <meta name="app-author" content="sysbridge">
@@ -51,7 +53,7 @@
 </main>
 <dialog id="tokDlg">
   <h3>Sensitive token</h3>
-  <div class="muted">Browsing files needs the <b>sensitive</b> token, not the ordinary bridge token. It is kept only in this page's memory — reload and you type it again. Get it with <code>python -m bridge --token</code>.</div>
+  <div class="muted">This bridge runs in <b>--fs-strict</b> mode: browsing files needs the separate sensitive token, which is never written into pages. It is kept only in this page's memory — reload and you type it again. Get it with <code>python -m bridge --token</code>.</div>
   <input id="tokIn" type="password" autocomplete="off" placeholder="token-sensitive">
   <div class="row"><button id="tokNo">Cancel</button><button id="tokOk" class="primary">Unlock</button></div>
 </dialog>
@@ -62,12 +64,14 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const fmtB = n => n == null ? '' : n >= 1073741824 ? (n/1073741824).toFixed(1)+' GiB' : n >= 1048576 ? (n/1048576).toFixed(1)+' MiB' : n >= 1024 ? (n/1024).toFixed(0)+' KiB' : n+' B';
 const fmtT = t => new Date(t*1000).toLocaleString();
 const IMG = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
-let TOKEN = '';            // page memory only, on purpose
+let TOKEN = '';            // sensitive token, page memory only — used only when the bridge is in --fs-strict mode
+const ordinary = () => { try { return localStorage.getItem('sysbridge.token') || ''; } catch (e) { return ''; } };
 let roots = [], cwd = null, listing = null, selected = null, sort = { k: 'name', d: 1 };
 
 async function api(path, params = {}, raw = false) {
   const u = new URL(location.origin + path); for (const [k, v] of Object.entries(params)) if (v != null) u.searchParams.set(k, v);
-  const r = await fetch(u, { headers: { 'X-Bridge-Sensitive-Token': TOKEN }, cache: 'no-store' });
+  const headers = TOKEN ? { 'X-Bridge-Sensitive-Token': TOKEN } : { 'X-Bridge-Token': ordinary() };
+  const r = await fetch(u, { headers, cache: 'no-store' });
   if (r.status === 401) { TOKEN = ''; const ok = await askToken(); if (!ok) throw new Error('locked'); return api(path, params, raw); }
   if (raw) { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r; }
   const j = await r.json().catch(() => null);
@@ -84,6 +88,7 @@ function askToken() {
   });
 }
 $('lock').onclick = () => { TOKEN = ''; listing = null; $('list').innerHTML = ''; $('view').innerHTML = '<div class="muted">locked</div>'; $('crumbs').innerHTML = ''; start(); };
+$('lock').title = 'Forget the sensitive token (strict mode only)';
 
 async function start() {
   $('err').textContent = '';

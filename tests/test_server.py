@@ -344,14 +344,25 @@ class FsApiTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.fx.close()
 
-    def test_needs_sensitive_token_not_the_ordinary_one(self):
+    def test_token_rules_default_and_strict(self):
         st, _, _ = self.fx.request("GET", "/v1/fs/roots", {"Origin": "null"})
-        self.assertEqual(st, 401)
+        self.assertEqual(st, 401)                                                   # no token at all
         st, _, _ = self.fx.request("GET", "/v1/fs/roots", {"X-Bridge-Token": self.fx.srv.token})
-        self.assertEqual(st, 401)
+        self.assertEqual(st, 200)                                                   # default: the ordinary (injected) token opens it
+        st, _, _ = self.fx.request("GET", "/v1/fs/roots", self.S)
+        self.assertEqual(st, 200)                                                   # the sensitive one always works
         st, h, _ = self.fx.request("GET", "/v1/fs/roots", {**self.S, "Origin": "https://evil.example"})
         self.assertEqual(st, 403)
         self.assertNotIn("access-control-allow-origin", h)
+        self.fx.srv.cfg.fs_strict = True
+        try:
+            st, _, b = self.fx.request("GET", "/v1/fs/roots", {"X-Bridge-Token": self.fx.srv.token})
+            self.assertEqual(st, 401)                                               # strict: ordinary token refused
+            self.assertIn("strict", b["error"]["message"])
+            st, _, _ = self.fx.request("GET", "/v1/fs/roots", self.S)
+            self.assertEqual(st, 200)
+        finally:
+            self.fx.srv.cfg.fs_strict = False
 
     def test_roots_ls_read_download(self):
         st, _, b = self.fx.request("GET", "/v1/fs/roots", self.S)

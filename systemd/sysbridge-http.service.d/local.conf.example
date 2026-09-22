@@ -7,3 +7,4 @@ Environment=SYSBRIDGE_DIR=%h/ai/sysbridge
 # Environment=SYSBRIDGE_PORT=8182     # if you skipped the port-80 sysctl
 # Environment=SYSBRIDGE_LLAMA_SERVERS=router=http://127.0.0.1:8080,reviewer=http://127.0.0.1:8127
 # Environment=SYSBRIDGE_TOKEN_INJECT=0     # paste the token in the launcher instead of auto-injecting it
+# Environment=SYSBRIDGE_FS_STRICT=1        # file browser needs the separate, never-injected token-sensitive

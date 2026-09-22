@@ -19,9 +19,10 @@ Security model (see HANDOVER.md → "Security model"):
   process can obtain the token by fetching a page with browser headers.
   Remote pages cannot read a cross-origin document. ``--no-token-inject``
   restores the paste-it-in-Settings model.
-* Two token classes, both 0600 under ``$XDG_RUNTIME_DIR/sysbridge/``: ``token``
-  (installs, actions, load/unload — apps may keep it) and ``token-sensitive``
-  (filesystem; apps must never store it, only hold it in page memory). A match is reflected in ``Access-Control-Allow-Origin`` with
+* Two token files, both 0600 under ``$XDG_RUNTIME_DIR/sysbridge/``: ``token``
+  (everything, injected into pages) and ``token-sensitive`` (never injected).
+  By default the filesystem API takes either; with ``--fs-strict`` only the
+  sensitive one, so Web-File then prompts for it each session. A match is reflected in ``Access-Control-Allow-Origin`` with
   ``Vary: Origin``. No match → 403 **without** CORS headers, so the browser
   hides the body from the page. No Origin header at all (curl) → allowed.
 * POST /v1/action/{name} additionally needs ``X-Bridge-Token`` equal to the
@@ -81,6 +82,7 @@ class Config:
     store_root: Optional[str] = None           # default: <repo>/store
     fs_config: Optional[str] = None            # default: ~/.config/sysbridge/fs.json
     inject_token: bool = True                  # write the ordinary token into localStorage of served pages
+    fs_strict: bool = False                    # True: /v1/fs needs the separate token-sensitive (never injected)
     fs_roots: Optional[list] = None            # test override
     builtins: Optional[dict] = None            # default: apps/<slug>/index.html in the repo
 
@@ -555,8 +557,13 @@ class Handler(BaseHTTPRequestHandler):
         """Read-only filesystem for Web-File. Sensitive token on every call; paths fenced by Fs.resolve."""
         if op not in ("roots", "ls", "stat", "read", "download"):
             return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "fs ops: roots, ls, stat, read, download"}}, origin)
-        if not self._sensitive_ok():
-            return self._send(401, {"ok": False, "error": {"type": "Unauthorized", "message": "missing or wrong X-Bridge-Sensitive-Token"}}, origin)
+        # Default: the ordinary (injected) token opens the file browser like any other app.
+        # --fs-strict: only the separate sensitive token does, and no page ever receives that one.
+        if self.server.cfg.fs_strict:
+            if not self._sensitive_ok():
+                return self._send(401, {"ok": False, "error": {"type": "Unauthorized", "message": "filesystem is in strict mode: X-Bridge-Sensitive-Token required"}}, origin)
+        elif not (self._token_ok() or self._sensitive_ok()):
+            return self._send(401, {"ok": False, "error": {"type": "Unauthorized", "message": "missing or wrong X-Bridge-Token"}}, origin)
         fs = self.server.fs
         path = (q.get("path") or [""])[0]
         try:

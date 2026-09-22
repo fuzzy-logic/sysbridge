@@ -544,6 +544,14 @@ read the ordinary token; remote pages cannot read a cross-origin document.
 `--no-token-inject` / `SYSBRIDGE_TOKEN_INJECT=0` restores the paste model.
 The sensitive token is never injected or served. 95 tests.
 
+### Addendum 2026-09-22 — file browser opens with the injected token
+
+User decision: Web-File must not prompt. `/v1/fs` now accepts the ordinary
+token by default (or the sensitive one); `--fs-strict` /
+`SYSBRIDGE_FS_STRICT=1` restores "sensitive token only", and Web-File falls
+back to prompting when it gets a 401. The sensitive token is otherwise
+unused and is still never injected or served.
+
 ## Phase 4 — per-app command permissions (idea, not scheduled)
 
 Now feasible: per-app origins give the bridge a browser-enforced caller identity (the `Origin` header). An app declares the CLI commands it wants (in its manifest / a meta tag); the

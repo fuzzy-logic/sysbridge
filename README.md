@@ -140,11 +140,12 @@ to pasting it in the launcher's Settings. The API answers on every host, so an
 app always calls `location.origin`.
 
 There are **two tokens**, both 0600 under `$XDG_RUNTIME_DIR/sysbridge/`:
-`token` for installs, actions and model load/unload, which the bridge injects
-into pages as above; and `token-sensitive` for filesystem access, which is
-**never** injected or served and which apps must never store — Web-File asks
-for it each session and keeps it in page memory. `python -m bridge --token`
-prints both.
+`token`, which the bridge injects into pages as above and which opens
+everything, the file browser included; and `token-sensitive`, which is
+**never** injected or served. By default the filesystem API accepts either.
+Start the bridge with `--fs-strict` (or `SYSBRIDGE_FS_STRICT=1`) and only the
+sensitive token opens files; Web-File then asks for it each session and keeps
+it in page memory. `python -m bridge --token` prints both.
 
 **The App Store.** `store/<slug>/index.html` in the repo is the catalogue.
 The built-in App Store app lists it with install/update/uninstall; `GET /v1/store`
@@ -158,7 +159,7 @@ external script/stylesheet/media, no hardcoded `localhost:port` (use
 |---|---|---|
 | **WTOP** | htop in a tab: per-core CPU, memory, uptime, load, every process with instantaneous CPU and RSS. Read-only. | `top` probe |
 | **ChatBridge** | chat with the models loaded right now; streaming; conversations stay in the browser | `POST /v1/llama/<server>/chat` — loaded models only, so a chat can never load or evict |
-| **Web-File** | read-only file browser and previewer under the allowed roots (your home by default) | `GET /v1/fs/…` with the sensitive token; roots in `~/.config/sysbridge/fs.json` |
+| **Web-File** | read-only file browser and previewer under the allowed roots (your home by default) | `GET /v1/fs/…`; roots in `~/.config/sysbridge/fs.json`; `--fs-strict` for a separate token |
 
 A terminal app was considered and deliberately **not** built: the service runs
 with `ProtectHome=read-only`, so a shell inside it could not do real work, and
@@ -188,7 +189,7 @@ header, responses capped at 1 MiB.
 | POST | `/llama/{server}/chat` | OpenAI-style `{model, messages, temperature, top_p, max_tokens, stream}` streamed through; **loaded models only**; fields whitelisted; no token; ≤ 4 concurrent |
 | GET | `/store` · `/store/{slug}` | catalogue with `installed`, `update_available`, `problems` |
 | POST | `/store/{slug}/install` | token; refuses entries with `problems` |
-| GET | `/fs/roots` · `/fs/ls?path=` · `/fs/stat?path=` · `/fs/read?path=` · `/fs/download?path=` | **sensitive token**; read-only; paths must resolve inside a configured root |
+| GET | `/fs/roots` · `/fs/ls?path=` · `/fs/stat?path=` · `/fs/read?path=` · `/fs/download?path=` | token (or the sensitive one; only that with `--fs-strict`); read-only; paths must resolve inside a configured root |
 
 Outside `/v1`: on `localhost` `/` is the launcher and `/apps/<slug>/…` an app;
 on `<slug>.localhost` `/…` is that app's files (validated slug, no traversal,
@@ -229,8 +230,8 @@ says what will be evicted.
 
 - **Bind 127.0.0.1 only.** Other addresses are not offered.
 - **Per-app origins are the trust boundary.** An installed app runs on `http://<slug>.localhost/`, isolated by the browser from the launcher and from every other app. It holds only the ordinary token, which the bridge writes into its storage when serving the page. Only the token holder can install; a remote page cannot (403, no CORS). Files are served with `nosniff` and only from inside the app's own directory.
-- **The ordinary token is embedded in served pages** (browser document requests only). That is a deliberate convenience for a single-user machine; `--no-token-inject` turns it off. The sensitive token is never served.
-- **The filesystem is the one place a client-supplied path is accepted.** It is fenced by `realpath` containment inside configured roots, is read-only, and needs the sensitive token that no app is allowed to store.
+- **The ordinary token is embedded in served pages** (browser document requests only) and, by default, opens the file browser too. That is a deliberate convenience for a single-user machine; `--no-token-inject` and `--fs-strict` are the two dials back towards caution. The sensitive token is never served.
+- **The filesystem is the one place a client-supplied path is accepted.** It is fenced by `realpath` containment inside configured roots and is read-only. It opens with the ordinary token by default; `--fs-strict` demands the separate sensitive token that is never served.
 - **Origin allowlist on every request:** exactly `null` (a `file://` page),
   `http://(127.0.0.1|localhost|[::1])(:port)?`, or values passed with
   `--origins`. Allowed → reflected with `Vary: Origin`. Anything else → **403
