@@ -59,6 +59,20 @@ class Config:
 LAUNCHER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "www", "launcher.html")
 MAX_APP_BODY = MAX_APP_BYTES + 64 * 1024
 
+# Appended to every HTML page served from /apps/<slug>/ so any uploaded app, with
+# no code of its own, gets a way back to the launcher: a small round ⌂ fixed at
+# the bottom-left, in a closed shadow root so the app's CSS cannot restyle it
+# and it cannot restyle the app. Appending after </html> is valid: browsers
+# parse trailing content into <body>. An app opts out with
+# <meta name="sysbridge-home" content="none">.
+HOME_BUTTON = """
+<script data-sysbridge-home>(function(){
+if(document.querySelector('meta[name="sysbridge-home"][content="none"]'))return;
+var h=document.createElement('sysbridge-home');var r=h.attachShadow({mode:'closed'});
+r.innerHTML='<style>a{position:fixed;left:12px;bottom:12px;z-index:2147483647;width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:rgba(28,31,36,.82);color:#fff;text-decoration:none;font:20px/1 system-ui,sans-serif;box-shadow:0 1px 5px rgba(0,0,0,.45);opacity:.65;transition:opacity .15s}a:hover,a:focus{opacity:1}</style><a href="/" title="sysbridge: all apps">\u2302</a>';
+document.documentElement.appendChild(h);})();</script>
+""".encode("utf-8")
+
 
 # ------------------------------------------------------------------ token
 def token_path() -> str:
@@ -180,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.rfile.read(n)
 
-    def _send_file(self, path: str, origin: Optional[str]) -> None:
+    def _send_file(self, path: str, origin: Optional[str], inject_home: bool = False) -> None:
         try:
             with open(path, "rb") as f:
                 data = f.read(MAX_APP_BODY + 1)
@@ -188,6 +202,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "file not found"}}, origin)
         if len(data) > MAX_APP_BODY:
             return self._send(500, {"ok": False, "error": {"type": "TooLarge", "message": "file too large to serve"}}, origin)
+        if inject_home and content_type_for(path).startswith("text/html"):
+            data += HOME_BUTTON
         self.send_response(200)
         self.send_header("Content-Type", content_type_for(path))
         self.send_header("Content-Length", str(len(data)))
@@ -262,7 +278,8 @@ class Handler(BaseHTTPRequestHandler):
                 path = self.server.apps.resolve(slug, rel)
                 if path is None:
                     return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "file not found"}}, origin)
-                return self._send_file(path, origin)
+                # every app page gets the floating sysbridge home button (see HOME_BUTTON)
+                return self._send_file(path, origin, inject_home=True)
             if u.path == "/favicon.ico":
                 return self._send(404, {"ok": False}, origin)
             if parts[:1] != ["v1"] or len(parts) < 2:

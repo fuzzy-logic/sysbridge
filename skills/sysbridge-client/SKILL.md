@@ -34,8 +34,10 @@ Because every app shares the bridge's origin:
   Two keys are shared on purpose: `sysbridge.token` (the write credential the
   user pasted once in the launcher) and `sysbridge.url` (blank = same origin).
   Read the token from there; do not ask the user to paste it again unless it is missing.
-- A `<a href="/">⌂</a>` back to the launcher is polite; the browser's back
-  button also works.
+- **Do not add your own home link.** The bridge appends a small floating ⌂
+  button (bottom-left, in a closed shadow root) to every page it serves from
+  `/apps/<slug>/`. Opt out with `<meta name="sysbridge-home" content="none">`
+  if your app draws its own.
 - Data the app must keep durably is not yours to store yet: `localStorage`
   only, for now. A `/v1/kv/<slug>/…` storage API is the planned extension.
 

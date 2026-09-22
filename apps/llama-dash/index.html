@@ -97,7 +97,6 @@
 </style>
 
 <header>
-  <a id="homeLink" href="/" title="sysbridge launcher" style="text-decoration:none;color:inherit" hidden>⌂</a>
   <h1>Llama Dashboard</h1>
   <span id="pausedFlag" class="paused" hidden>paused (tab hidden)</span>
   <span class="stamp">last refreshed <span id="stamp">—</span></span>
@@ -173,7 +172,6 @@ function saveSettings(s) {
   S = s;
   try { const { token, ...rest } = s; localStorage.setItem(LS_KEY, JSON.stringify(rest)); localStorage.setItem(TOKEN_KEY, token || ''); } catch (e) {}
 }
-if (SERVED_BY_BRIDGE) document.getElementById('homeLink').hidden = false;
 const trim = u => (u || '').trim().replace(/\/+$/, '');
 
 // ---------------------------------------------------------------- helpers

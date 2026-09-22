@@ -104,8 +104,15 @@ Conventions, no configuration:
 | replace | upload a page with the same title; the old copy moves to `.trash/` |
 | uninstall | from the tile's ⋯ menu; also moves to `.trash/`, never deletes |
 
-**Link tiles** open any URL — the router's own web UI on :8080, say — so the
-launcher covers UIs that are not bridge apps too.
+Every app page gets a small floating **⌂ home button** (bottom-left) added by
+the bridge as it serves the file, so any upload has a way back to the launcher
+with no code of its own. Apps that draw their own can opt out with
+`<meta name="sysbridge-home" content="none">`.
+
+**Link tiles** are the one thing that leaves port 80 on purpose: they open any
+URL — the router's own web UI on :8080, say — so the launcher also covers UIs
+that are not bridge apps. Everything uploaded is served from `/apps/<slug>/`
+on the launcher's own origin.
 
 Every app is same-origin with the API, so no app needs a bridge URL, and the
 token pasted once in the launcher's Settings (`localStorage` key

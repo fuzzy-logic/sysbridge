@@ -250,6 +250,10 @@ class AppsApiTests(unittest.TestCase):
         st, h, data = self.fx.raw("GET", "/apps/dash/")
         self.assertEqual(st, 200)
         self.assertIn(b"Llama Dashboard", data)
+        self.assertIn(b"data-sysbridge-home", data)          # home button injected into app pages
+        self.assertEqual(int(h["content-length"]), len(data))
+        self.assertNotIn(b"data-sysbridge-home", self.fx.raw("GET", "/")[2])            # not into the launcher
+        self.assertNotIn(b"data-sysbridge-home", self.fx.raw("GET", "/apps/dash/app.js")[2])  # not into non-HTML
         st, h, data = self.fx.raw("GET", "/apps/dash/app.js")
         self.assertEqual(st, 200)
         self.assertTrue(h["content-type"].startswith("text/javascript"))
