@@ -363,3 +363,81 @@ verify the hardening (below). Wire the dashboard's System panel to the live brid
   the untracked `local.conf` / `actions.json`.
 - Use `git` from the first file; commit per step; run the personal-data grep
   before each push.
+
+---
+
+## Phase 3 — one port, a launcher at `/`, installable web apps (approved 2026-09-22)
+
+**Why.** Remembering ports is the friction: the router is :8080, the reviewer
+:8127, the bridge :8182, the dashboard wherever `http.server` was pointed.
+The user wants `http://localhost/` to be the only address: a home-screen grid
+of installed apps, the dashboard built in, more `.html` apps installable by
+upload, and plain links for UIs that live on other ports.
+
+**Shape.**
+
+```
+http://localhost/                 launcher: grid of installed apps (built into the bridge)
+http://localhost/apps/<slug>/     an installed app; link apps 302 to their URL
+http://localhost/v1/...           the existing API, unchanged
+```
+
+Every app is same-origin with the API, so no app needs to know a bridge URL
+and one pasted token (shared `localStorage` key) serves the launcher and all apps.
+
+**Conventions (no configuration).**
+
+- Install = upload one `.html`. Name from `<title>`, subtitle from
+  `<meta name="description">`, icon from `<meta name="app-icon" content="🦙">`
+  (fallback: title initials). Slug = slugified title, `^[a-z0-9][a-z0-9-]{0,47}$`,
+  is the URL. Same title on upload = replace.
+- Link app = `{kind: "link", url, title, icon}`; a tile that opens a URL.
+- Storage `$STATE_DIRECTORY/apps/<slug>/` (systemd `StateDirectory=sysbridge`),
+  else `$XDG_STATE_HOME/sysbridge/apps`, else `~/.local/state/sysbridge/apps`.
+  `index.html` + generated `manifest.json` (`slug, title, description, icon,
+  kind, url, builtin, installed_at, size, sha256, original_filename`).
+- Replace/uninstall **move** the old app to `apps/.trash/<slug>-<timestamp>/`.
+  Built-ins (`llama-dash`, served from the repo) cannot be uninstalled.
+- Apps keep state in `localStorage` under `app:<slug>:…` — same-origin apps
+  share one store, so unprefixed keys collide. Shared on purpose:
+  `sysbridge.token`, `sysbridge.url` (empty = same origin).
+- Apps default their bridge URL to `location.origin` when served from `/apps/`,
+  to `http://localhost` when opened from `file://`. Both keep working.
+
+**API additions.** Same Origin gate as everything; writes need `X-Bridge-Token`.
+
+| method | path | notes |
+|---|---|---|
+| GET | `/` | launcher |
+| GET | `/apps/<slug>/[file]` | static, slug validated, no traversal, no listings; `/apps/<slug>` → 301 `/apps/<slug>/`; link apps → 302 |
+| GET | `/v1/apps` | manifests, built-ins first |
+| POST | `/v1/apps` | `Content-Type: text/html` body = the app (4 MiB cap; the launcher reads the file client-side and posts the text — Python 3.14 has no stdlib multipart parser); `application/json` body = link app |
+| DELETE | `/v1/apps/<slug>` | `{"confirm": true}`; moves to trash; 403 for built-ins |
+
+**Port 80.** Default becomes `--port 80`; on `EACCES` the bridge exits with the
+fix printed rather than silently choosing another port. The one privileged
+step is the user's (sudo is fingerprint-only from an agent shell):
+`/etc/sysctl.d/80-sysbridge.conf` with `net.ipv4.ip_unprivileged_port_start = 80`.
+It lowers the threshold machine-wide for all users; reversal = delete the file,
+set 1024. `setcap` on the Python binary was rejected (grants every script).
+`--port 8182` keeps working meanwhile.
+
+**Order of work.** (1) `bridge/apps.py` + tests (slug, meta parser, install/
+replace/trash/uninstall, traversal, links). (2) Static serving. (3) `/v1/apps`.
+(4) Launcher page `bridge/www/launcher.html`: grid, upload (picker + drag-drop,
+preview parsed title before install), add-link, per-app settings view
+(manifest, uninstall). (5) llama-dash: title "Llama Dashboard", `app-icon`
+meta, same-origin default, shared token key, `app:llama-dash:` prefix.
+(6) Skill, README, unit (`StateDirectory`, port 80, sysctl note). (7) Browser
+verification incl. remote-origin 403 on upload.
+
+## Phase 4 — per-app command permissions (idea, not scheduled)
+
+An app declares the CLI commands it wants (in its manifest / a meta tag); the
+launcher's per-app settings view lists them and the user approves each one, or
+all, per app. The bridge then exposes only approved commands to that app.
+Design consequences taken *now* so this fits later: every app has a manifest
+and a settings view; the token stays the write credential; the actions
+allowlist remains fixed argv, so "approving a command" will mean copying a
+fixed argv into an app-scoped allowlist, never passing arguments through.
+A `/v1/kv/<slug>/…` storage API is the other reserved extension.
