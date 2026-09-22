@@ -215,7 +215,7 @@ These are what `bridge/llama.py` calls; an app never needs them directly.
 
 - [ ] Has `<title>`, `<meta name="description">`, `<meta name="app-icon">`; installs from the launcher and appears as a tile
 - [ ] Works at `http://<slug>.localhost/` **and** opened from `file://`; no console errors either way
-- [ ] Reads `sysbridge.token` at call time, not at load; never stores the sensitive token
+- [ ] Reads `sysbridge.token` from localStorage at call time; never stores the sensitive token
 - [ ] `python -m unittest tests.test_store` passes with the file in `store/<slug>/`
 - [ ] Bridge stopped → system panel hidden, everything else still works
 - [ ] Model server stopped → its card turns unhealthy, page keeps polling and recovers

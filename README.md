@@ -126,16 +126,24 @@ on the launcher's own origin.
 origin, so its storage is invisible to every other app. `*.localhost` resolves
 to this machine in Chromium, Firefox and systemd-resolved with no setup; the
 path form `/apps/<slug>/` remains as a fallback and shares the launcher's
-origin. When you open an app from the launcher, the launcher hands it the
-bridge token in the URL fragment (never sent to the server); the bridge's
-injected home script stores it in that origin and strips it from the address
-bar. Apps read the token from `localStorage` key `sysbridge.token` at call
-time. The API answers on every host, so an app always calls `location.origin`.
+origin. **The bridge writes the token into every app's `localStorage` as it
+serves the page**: a one-line `<script>` prepended to each HTML document
+(launcher and apps), so `localStorage['sysbridge.token']` is set before the
+app's first script runs. Nothing to paste, nothing in URLs. Only browser
+document requests receive it (`Sec-Fetch-Dest: document`, or `Accept:
+text/html` from older browsers); `curl` and `fetch()` do not. The trade-off,
+chosen deliberately for a single-user machine: a local process that fetches an
+app page with browser headers can read the ordinary token. Remote web pages
+cannot, because a cross-origin document is unreadable to them. Run with
+`--no-token-inject` (or `SYSBRIDGE_TOKEN_INJECT=0` in the drop-in) to go back
+to pasting it in the launcher's Settings. The API answers on every host, so an
+app always calls `location.origin`.
 
 There are **two tokens**, both 0600 under `$XDG_RUNTIME_DIR/sysbridge/`:
-`token` for installs, actions and model load/unload, which apps may keep; and
-`token-sensitive` for filesystem access, which apps must never store — Web-File
-asks for it each session and keeps it in page memory. `python -m bridge --token`
+`token` for installs, actions and model load/unload, which the bridge injects
+into pages as above; and `token-sensitive` for filesystem access, which is
+**never** injected or served and which apps must never store — Web-File asks
+for it each session and keeps it in page memory. `python -m bridge --token`
 prints both.
 
 **The App Store.** `store/<slug>/index.html` in the repo is the catalogue.
@@ -220,7 +228,8 @@ says what will be evicted.
 ## Security model
 
 - **Bind 127.0.0.1 only.** Other addresses are not offered.
-- **Per-app origins are the trust boundary.** An installed app runs on `http://<slug>.localhost/`, isolated by the browser from the launcher and from every other app. It holds only the ordinary token, handed over when opened. Only the token holder can install; a remote page cannot (403, no CORS). Files are served with `nosniff` and only from inside the app's own directory.
+- **Per-app origins are the trust boundary.** An installed app runs on `http://<slug>.localhost/`, isolated by the browser from the launcher and from every other app. It holds only the ordinary token, which the bridge writes into its storage when serving the page. Only the token holder can install; a remote page cannot (403, no CORS). Files are served with `nosniff` and only from inside the app's own directory.
+- **The ordinary token is embedded in served pages** (browser document requests only). That is a deliberate convenience for a single-user machine; `--no-token-inject` turns it off. The sensitive token is never served.
 - **The filesystem is the one place a client-supplied path is accepted.** It is fenced by `realpath` containment inside configured roots, is read-only, and needs the sensitive token that no app is allowed to store.
 - **Origin allowlist on every request:** exactly `null` (a `file://` page),
   `http://(127.0.0.1|localhost|[::1])(:port)?`, or values passed with

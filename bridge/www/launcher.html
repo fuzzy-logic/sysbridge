@@ -3,8 +3,8 @@
 
   A home screen for the .html apps installed on this bridge. Each app is served
   on its own origin, http://<slug>.localhost/, so the browser isolates apps from
-  one another; the token pasted here is handed to an app in the URL fragment
-  when you open it (never sent to the server, stripped from the address bar).
+  one another; the bridge writes the token into each origin's localStorage as
+  it serves the page, so an app has it before its first script runs.
 
   Install = upload one .html: the name is its <title>, the subtitle its
   <meta name="description">, the icon <meta name="app-icon" content="🦙">.
@@ -127,9 +127,9 @@
 <dialog id="settingsDlg">
   <h3>Settings</h3>
   <dl id="sInfo"></dl>
-  <label>Bridge token — needed to install or uninstall apps, run actions, load/unload models. Handed to each app when you open it from here.</label>
+  <label>Bridge token — needed to install or uninstall apps, run actions, load/unload models. The bridge writes it into every app's storage as it serves the page; you only paste it here if the bridge runs with <code>--no-token-inject</code>.</label>
   <input id="sToken" autocomplete="off" spellcheck="false">
-  <div class="muted" style="font-size:.8rem;margin-top:.3rem">Get it with <code>python -m bridge --token</code> (it lives in <code>$XDG_RUNTIME_DIR/sysbridge/token</code> and is never served over HTTP).</div>
+  <div class="muted" style="font-size:.8rem;margin-top:.3rem"><code>python -m bridge --token</code> prints it (and the separate <b>sensitive</b> token for the file browser, which is never injected anywhere).</div>
   <div class="actions"><button type="button" id="sClose">Close</button><button type="button" class="primary" id="sSave">Save</button></div>
 </dialog>
 
@@ -168,11 +168,11 @@ function iconHTML(a, cls = 'icon') {
   return `<div class="${cls}${isEmoji ? '' : ' text'}${a.kind === 'link' ? ' link' : ''}">${esc(a.icon || '?')}</div>`;
 }
 // Every app gets its own origin, http://<slug>.localhost[:port]/, so the browser isolates its storage
-// from every other app's. The launcher hands the token over in the URL fragment (never sent to the
-// server); the bridge's injected home script stores it in that origin and strips it from the URL.
+// from every other app's. The bridge writes the token into each origin's localStorage as it serves
+// the page (a <script> prepended to the document), so nothing is passed in URLs.
 const PORT = location.port && location.port !== '80' ? ':' + location.port : '';
 const appOrigin = a => `http://${a.slug}.localhost${PORT}/`;
-const appHref = a => a.kind === 'link' ? a.url : appOrigin(a) + (token() ? '#sysbridge-token=' + encodeURIComponent(token()) : '');
+const appHref = a => a.kind === 'link' ? a.url : appOrigin(a);
 function render() {
   const tiles = apps.map(a => `<a class="tile" href="${esc(appHref(a))}" data-slug="${esc(a.slug)}" ${a.kind === 'link' ? 'target="_blank" rel="noopener"' : ''}>
       ${iconHTML(a)}<div class="name">${esc(a.title)}</div><div class="desc">${esc(a.description || (a.kind === 'link' ? a.url : ''))}</div>

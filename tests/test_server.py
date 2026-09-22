@@ -250,7 +250,53 @@ class PerAppOriginTests(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertTrue(h["content-type"].startswith("text/javascript"))
         self.assertNotIn(b"data-sysbridge-home", data)
-        self.assertIn(b"sysbridge-token=", self.fx.raw("GET", "/", {"Host": "dash.localhost"})[2])  # handoff snippet
+
+    def test_token_injected_only_into_browser_documents(self):
+        tok = self.fx.srv.token.encode()
+        browser = {"Host": "dash.localhost", "Sec-Fetch-Dest": "document", "Accept": "text/html,*/*"}
+        st, _, data = self.fx.raw("GET", "/", browser)
+        self.assertIn(b"data-sysbridge-token", data)
+        self.assertIn(tok, data)
+        self.assertLess(data.index(b"data-sysbridge-token"), data.index(b"Llama Dashboard"))   # before the app's own content
+        self.assertNotIn(self.fx.srv.sensitive_token.encode(), data)                            # never the sensitive one
+        # the launcher document gets it too
+        st, _, data = self.fx.raw("GET", "/", {"Host": "localhost", "Sec-Fetch-Dest": "document"})
+        self.assertIn(tok, data)
+        # old browsers without Sec-Fetch: Accept decides
+        st, _, data = self.fx.raw("GET", "/", {"Host": "dash.localhost", "Accept": "text/html"})
+        self.assertIn(tok, data)
+        # curl-like requests do not get it
+        st, _, data = self.fx.raw("GET", "/", {"Host": "dash.localhost"})
+        self.assertNotIn(tok, data)
+        st, _, data = self.fx.raw("GET", "/", {"Host": "dash.localhost", "Accept": "*/*"})
+        self.assertNotIn(tok, data)
+        # fetch()/XHR from a page is not a document either
+        st, _, data = self.fx.raw("GET", "/", {"Host": "dash.localhost", "Sec-Fetch-Dest": "empty", "Accept": "*/*"})
+        self.assertNotIn(tok, data)
+        # never into non-HTML or API responses
+        st, _, data = self.fx.raw("GET", "/app.js", browser)
+        self.assertNotIn(tok, data)
+        st, _, data = self.fx.raw("GET", "/v1/health", browser)
+        self.assertNotIn(tok, data)
+        # content-length matches the modified body
+        st, h, data = self.fx.raw("GET", "/", browser)
+        self.assertEqual(int(h["content-length"]), len(data))
+
+    def test_token_injection_can_be_disabled(self):
+        self.fx.srv.cfg.inject_token = False
+        try:
+            st, _, data = self.fx.raw("GET", "/", {"Host": "dash.localhost", "Sec-Fetch-Dest": "document"})
+            self.assertNotIn(self.fx.srv.token.encode(), data)
+            self.assertIn(b"data-sysbridge-home", data)
+        finally:
+            self.fx.srv.cfg.inject_token = True
+
+    def test_doctype_kept_first(self):
+        from bridge.server import with_token
+        out = with_token(b"<!DOCTYPE html><html><head></head></html>", "T")
+        self.assertTrue(out.startswith(b"<!DOCTYPE html>\n<script data-sysbridge-token>"))
+        out = with_token(b"<meta charset=utf-8><title>x</title>", "T")
+        self.assertTrue(out.startswith(b"<script data-sysbridge-token>"))
 
     def test_app_host_api_and_launcher_paths_still_work(self):
         st, _, b = self.fx.request("GET", "/v1/health", {"Host": "dash.localhost"})

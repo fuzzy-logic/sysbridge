@@ -10,8 +10,15 @@ Security model (see HANDOVER.md → "Security model"):
   and in systemd-resolved with no setup). The browser then isolates each app's
   storage from every other app's — the boundary the store needs. The path form
   ``/apps/<slug>/`` stays as a fallback. The launcher hands an app its token in
-  the URL fragment (never sent to the server); the injected home script stores
-  it in that app's own origin and strips it from the address bar.
+  … and the bridge writes the ordinary token into each app's ``localStorage``
+  itself: a ``<script>`` prepended to every HTML *document* it serves (app
+  pages and the launcher), so the token is there before the app's first
+  script runs. Only browser document requests get it (``Sec-Fetch-Dest:
+  document``/``iframe``, or ``Accept: text/html`` from browsers without
+  Sec-Fetch); ``curl`` does not. Trade-off, chosen deliberately: a local
+  process can obtain the token by fetching a page with browser headers.
+  Remote pages cannot read a cross-origin document. ``--no-token-inject``
+  restores the paste-it-in-Settings model.
 * Two token classes, both 0600 under ``$XDG_RUNTIME_DIR/sysbridge/``: ``token``
   (installs, actions, load/unload — apps may keep it) and ``token-sensitive``
   (filesystem; apps must never store it, only hold it in page memory). A match is reflected in ``Access-Control-Allow-Origin`` with
@@ -73,6 +80,7 @@ class Config:
     apps_root: Optional[str] = None            # default: see apps.apps_root()
     store_root: Optional[str] = None           # default: <repo>/store
     fs_config: Optional[str] = None            # default: ~/.config/sysbridge/fs.json
+    inject_token: bool = True                  # write the ordinary token into localStorage of served pages
     fs_roots: Optional[list] = None            # test override
     builtins: Optional[dict] = None            # default: apps/<slug>/index.html in the repo
 
@@ -88,14 +96,11 @@ MAX_CHATS = 4
 # installed apps, token state. It lives in a closed shadow root so the app's
 # CSS cannot restyle it and it cannot restyle the app. The launcher URL is
 # absolute (per-app origins would otherwise make "/" point at the app itself).
-# The same script completes the token handoff: a #sysbridge-token=… fragment
-# from the launcher is stored in this origin and stripped from the address bar.
 # Appending after </html> is valid: browsers parse trailing content into <body>.
 # An app opts out with <meta name="sysbridge-home" content="none">.
 _HOME_TEMPLATE = r"""
 <script data-sysbridge-home>(function(){
 var L=__LAUNCHER__;
-try{var m=location.hash.match(/(?:^#|&)sysbridge-token=([^&]+)/);if(m){localStorage.setItem('sysbridge.token',decodeURIComponent(m[1]));history.replaceState(null,'',location.pathname+location.search);}}catch(e){}
 if(document.querySelector('meta[name="sysbridge-home"][content="none"]'))return;
 var h=document.createElement('sysbridge-home');var r=h.attachShadow({mode:'closed'});
 r.innerHTML='<style>'+
@@ -108,7 +113,7 @@ var b=r.querySelector('.b'),p=r.querySelector('.p');
 function tok(){try{return localStorage.getItem('sysbridge.token')||''}catch(e){return''}}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function port(){var m=L.match(/:(\d+)\/$/);return m?':'+m[1]:''}
-function appUrl(a){if(a.kind==='link')return a.url;var u='http://'+a.slug+'.localhost'+port()+'/';var t=tok();return t?u+'#sysbridge-token='+encodeURIComponent(t):u}
+function appUrl(a){return a.kind==='link'?a.url:'http://'+a.slug+'.localhost'+port()+'/'}
 function build(apps){var me=location.hostname.replace(/\.localhost$/,'');var cur=(location.pathname.match(/^\/apps\/([a-z0-9-]+)/)||[])[1]||me;
 var html='<div class="t">sysbridge</div><a href="'+esc(L)+'"><span class="i">\u2302</span>All apps</a><hr>';
 apps.forEach(function(a){html+='<a href="'+esc(appUrl(a))+'"'+(a.kind==='link'?' target="_blank" rel="noopener"':'')+' class="'+(a.slug===cur?'cur':'')+'"><span class="i">'+esc(a.icon)+'</span>'+esc(a.title)+(a.kind==='link'?' \u2197':'')+'</a>'});
@@ -119,6 +124,20 @@ document.addEventListener('click',function(e){if(p.classList.contains('on')&&e.t
 document.documentElement.appendChild(h);})();</script>
 """
 _home_cache: dict = {}
+
+# Prepended to every HTML document the bridge serves (launcher and apps) so the
+# ordinary token is in localStorage before the page's first script runs. Goes
+# right after the doctype so the page keeps standards mode.
+_TOKEN_TEMPLATE = b'<script data-sysbridge-token>try{localStorage.setItem("sysbridge.token",__TOKEN__)}catch(e){}</script>\n'
+_DOCTYPE_RE = re.compile(rb"^\s*<!doctype[^>]*>", re.I)
+
+
+def with_token(data: bytes, token: str) -> bytes:
+    tag = _TOKEN_TEMPLATE.replace(b"__TOKEN__", json.dumps(token).encode("utf-8"))
+    m = _DOCTYPE_RE.match(data)
+    if m:
+        return data[:m.end()] + b"\n" + tag + data[m.end():]
+    return tag + data
 
 
 def home_button(launcher_url: str) -> bytes:
@@ -258,6 +277,14 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.rfile.read(n)
 
+    def _is_document_request(self) -> bool:
+        """A browser navigating to a page (not fetch(), not curl). Sec-Fetch-Dest when the
+        browser sends it; otherwise an Accept header that asks for HTML."""
+        dest = self.headers.get("Sec-Fetch-Dest")
+        if dest is not None:
+            return dest in ("document", "iframe", "frame", "embed")
+        return "text/html" in (self.headers.get("Accept") or "")
+
     def _send_file(self, path: str, origin: Optional[str], inject_home: bool = False) -> None:
         try:
             with open(path, "rb") as f:
@@ -266,8 +293,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "file not found"}}, origin)
         if len(data) > MAX_APP_BODY:
             return self._send(500, {"ok": False, "error": {"type": "TooLarge", "message": "file too large to serve"}}, origin)
-        if inject_home and content_type_for(path).startswith("text/html"):
-            data += home_button(self._launcher_url())
+        if content_type_for(path).startswith("text/html"):
+            if inject_home:
+                data += home_button(self._launcher_url())
+            if self.server.cfg.inject_token and self._is_document_request():
+                data = with_token(data, self.server.token)
         self.send_response(200)
         self.send_header("Content-Type", content_type_for(path))
         self.send_header("Content-Length", str(len(data)))

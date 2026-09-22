@@ -531,6 +531,19 @@ Store installing all three via its UI; WTOP live (32 cores, 700 tasks);
 ChatBridge streamed "pong" from the loaded router model in 206 ms; Web-File
 unlocked, listed `~`, no token in any storage. 92 tests.
 
+### Addendum 2026-09-22 — the token is injected by the bridge
+
+User decision: apps must find the ordinary token in `localStorage` from the
+start, put there by sysbridge. Implemented as a one-line `<script
+data-sysbridge-token>` prepended (after the doctype) to every HTML *document*
+the bridge serves — launcher and app pages — for browser document requests
+only (`Sec-Fetch-Dest: document|iframe`, else `Accept: text/html`). `curl`,
+`fetch()` and non-HTML get nothing. The URL-fragment handoff is gone.
+Trade-off, recorded and accepted: a local process with browser headers can
+read the ordinary token; remote pages cannot read a cross-origin document.
+`--no-token-inject` / `SYSBRIDGE_TOKEN_INJECT=0` restores the paste model.
+The sensitive token is never injected or served. 95 tests.
+
 ## Phase 4 — per-app command permissions (idea, not scheduled)
 
 Now feasible: per-app origins give the bridge a browser-enforced caller identity (the `Origin` header). An app declares the CLI commands it wants (in its manifest / a meta tag); the

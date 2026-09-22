@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from . import __version__
@@ -34,6 +35,8 @@ def main(argv=None) -> int:
                     help="loopback only; other addresses are refused on purpose")
     ap.add_argument("--origins", nargs="*", default=[], help="extra exact Origin values to allow (loopback origins and null are always allowed)")
     ap.add_argument("--actions-file", default=None, help="override the allowlist path (default ~/.config/sysbridge/actions.json)")
+    ap.add_argument("--no-token-inject", action="store_true",
+                    help="do not write the ordinary token into served pages' localStorage; users paste it in the launcher instead")
     ap.add_argument("--apps-root", default=None, help="where uploaded apps live (default $STATE_DIRECTORY/apps or ~/.local/state/sysbridge/apps)")
     ap.add_argument("--once", metavar="NAME", help="run one probe, print its envelope as JSON, exit 0/1")
     ap.add_argument("--list", action="store_true", help="list probes and exit")
@@ -55,7 +58,8 @@ def main(argv=None) -> int:
               f"token-sensitive  {ensure_token(q)}   ({q})  — filesystem access; type it, never store it")
         return 0
 
-    cfg = Config(bind=a.bind, port=a.port, extra_origins=list(a.origins), actions_file=a.actions_file, apps_root=a.apps_root)
+    cfg = Config(bind=a.bind, port=a.port, extra_origins=list(a.origins), actions_file=a.actions_file, apps_root=a.apps_root,
+                 inject_token=not (a.no_token_inject or os.environ.get("SYSBRIDGE_TOKEN_INJECT", "1") == "0"))
     try:
         serve(cfg)
     except KeyboardInterrupt:

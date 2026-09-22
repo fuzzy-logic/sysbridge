@@ -49,7 +49,7 @@
   <div class="howto">Apps live in the repo's <code>store/&lt;slug&gt;/index.html</code>. To add one, open a pull request with a single-file app carrying
     <code>&lt;title&gt;</code>, <code>&lt;meta name="description"&gt;</code>, <code>&lt;meta name="app-icon"&gt;</code> and optionally
     <code>app-version</code> / <code>app-author</code>. It must be inline-only and talk to <code>location.origin</code> only; the catalogue test checks that.
-    Installing needs the bridge token — open this app from the launcher and it is handed over automatically.</div>
+    Installing needs the bridge token, which the bridge writes into this page's storage as it serves it.</div>
 </main>
 <dialog id="dlg"><h3 id="dTitle"></h3><div id="dBody"></div><div class="row"><button id="dNo">Cancel</button><button id="dYes" class="danger">Uninstall</button></div></dialog>
 <script>
@@ -65,7 +65,7 @@ async function api(method, path, body, headers = {}) {
   if (!r.ok) { const e = new Error(j?.error?.message || `HTTP ${r.status}`); e.status = r.status; throw e; }
   return j;
 }
-const describe = e => e.status === 401 ? 'The bridge wants your token: open this app from the launcher (which hands it over), or paste it there in Settings.' : e.message;
+const describe = e => e.status === 401 ? 'The bridge refused the token. It normally injects it into this page; if it runs with --no-token-inject, paste it in the launcher Settings.' : e.message;
 let items = [];
 async function load() {
   try { items = await api('GET', '/v1/store'); $('err').textContent = ''; }

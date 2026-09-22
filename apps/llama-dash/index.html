@@ -160,7 +160,7 @@
 const SERVED_BY_BRIDGE = location.pathname.startsWith('/apps/') || /\.localhost$/.test(location.hostname);
 const DEFAULTS = { bridge: SERVED_BY_BRIDGE ? location.origin : 'http://localhost', token: '' };
 const LS_KEY = 'app:llama-dash:settings';      // prefixed for the /apps/ fallback, where apps share one origin
-const TOKEN_KEY = 'sysbridge.token';            // where the launcher's handoff (via the bridge's home script) puts it
+const TOKEN_KEY = 'sysbridge.token';            // written by the bridge into this origin's localStorage as it serves the page
 let S = loadSettings();
 function loadSettings() {
   let s = {}; try { s = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch (e) {}
@@ -314,7 +314,7 @@ async function confirmAction(act, id) {
     body = `<div class="consequence">Unloading <b>${esc(id)}</b> frees its ${fmtBytes(m.meta?.size)} of GPU memory. ` +
       `Any client that names it will trigger a cold reload on its next request (30–120 s). The preset stays in the router; nothing is removed.</div>`;
   }
-  if (!tokenNow()) body += `<div class="err">The bridge needs your token for this. Open this app from the launcher (it hands the token over) or paste it in Settings.</div>`;
+  if (!tokenNow()) body += `<div class="err">No bridge token in this page's storage (the bridge runs with --no-token-inject?). Paste it in Settings.</div>`;
   $('confirmTitle').textContent = title; $('confirmBody').innerHTML = body;
   $('confirmYes').textContent = act === 'load' ? 'Load' : 'Unload';
   const dlg = $('confirmDlg');
@@ -329,8 +329,7 @@ async function confirmAction(act, id) {
   try {
     const r = await getJSON(`${trim(S.bridge)}/v1/llama/${encodeURIComponent(rt.name)}/${act}`, {
       method: 'POST', timeout: 30000,
-      // read the token at call time: the launcher's handoff is stored by the bridge's injected script,
-      // which runs after this page's own script on the first visit
+      // read the token at call time so a token pasted in Settings mid-session is picked up
       headers: { 'Content-Type': 'application/json', 'X-Bridge-Token': tokenNow() },
       body: JSON.stringify({ model: id, confirm: true }),
     });
