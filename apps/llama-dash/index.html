@@ -1,33 +1,32 @@
 <!--
-  llama-dash — what is my llama-server router doing right now?
+  Llama Dashboard — what is my llama-server router doing right now?
 
-  One file. No build, no dependencies. Normally served by sysbridge at
-  http://localhost/apps/llama-dash/ (a built-in app of the launcher), but it
-  also works opened from file:// or any localhost port. It talks straight to:
+  One file. No build, no dependencies. An ordinary sysbridge app: served from
+  http://localhost/apps/llama-dash/ and it talks to exactly one thing, the
+  bridge on its own origin (opened from file:// it uses http://localhost).
+  The llama-servers are the bridge's upstreams (SYSBRIDGE_LLAMA_SERVERS,
+  default router :8080 + reviewer :8127) and arrive as probes:
 
-    router    http://127.0.0.1:8080   llama-server started with no -m (router mode)
-    reviewer  http://127.0.0.1:8127   a single-model llama-server (optional)
-    bridge    same origin / http://localhost   sysbridge, for GPU/RAM/disk (optional)
+    llama          health, mode, props, models per server      (2 s)
+    llama_slots    /slots per loaded model — who is generating (1 s)
+    gpu ram cpu disk battery rocm_pids router_models            (system panel)
 
-  Both llama-servers reflect any Origin (including "null" from file://), so
-  a static page can call them directly. Endpoints live in the settings drawer
-  and persist in localStorage.
+  Load/Unload go through POST /v1/llama/<server>/load|unload with the shared
+  bridge token, behind a dialog that states what gets evicted.
 
   Footguns this page is built around (verified 2026-09-22, build b1-c26c2ea):
-    * GET /props?model=<unloaded> LOADS that model unless ?autoload=false.
-      Every router GET here carries autoload=false. Do not remove it.
-    * /models/sse sends nothing until a status changes; snapshot via /models.
-    * Under --models-max 1, POST /models/load evicts the resident model.
-      The confirm dialog says so, with sizes read from live state.
+    * /props?model=<unloaded> LOADS that model — the bridge sends autoload=false
+      on every router GET, so no page can trigger it by accident.
+    * Under --models-max 1, load evicts the resident model. The confirm says so.
     * DELETE /models removes a model from the router and breaks every client
-      that names it. This page has no delete button on purpose.
+      that names it. Neither this page nor the bridge offers it.
     * gpu_busy_percent reads 100% whenever a model is merely resident on this
-      APU. /slots is the activity signal; busy% is shown with that caveat.
+      APU. Activity (/slots) is the real signal; busy% carries that caveat.
 -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Llama Dashboard</title>
-<meta name="description" content="What the llama-server router is doing right now: resident model, who is generating, GPU memory per process.">
+<meta name="description" content="What the llama-server router is doing right now: resident model, who is generating, GPU memory per process. Talks only to the bridge.">
 <meta name="app-icon" content="🦙">
 <style>
   :root {
@@ -106,6 +105,7 @@
 <main>
   <section id="serversSec" class="wide">
     <h2>Servers <span class="sub">health · build · slots · mode</span></h2>
+    <div class="err" id="serversErr"></div>
     <div id="servers" class="cards"></div>
   </section>
 
@@ -116,8 +116,7 @@
   </section>
 
   <section id="activitySec" class="wide">
-    <h2>Activity <span class="sub">/slots, 1 s</span></h2>
-    <div class="err" id="activityErr"></div>
+    <h2>Activity <span class="sub">/slots via the bridge, 1 s</span></h2>
     <div id="activity" class="cards"></div>
   </section>
 
@@ -129,12 +128,12 @@
 </main>
 
 <dialog id="settingsDlg">
-  <h3>Endpoints</h3>
+  <h3>Settings</h3>
   <form method="dialog" id="settingsForm">
-    <label>Router (llama-server, router mode)</label><input name="router" placeholder="http://127.0.0.1:8080">
-    <label>Reviewer (single-model llama-server, optional — blank to disable)</label><input name="reviewer" placeholder="http://127.0.0.1:8127">
-    <label>Bridge (sysbridge, optional — blank to disable)</label><input name="bridge" placeholder="http://localhost">
-    <label>Bridge token (shared with the launcher and other apps; from <code>python -m bridge --token</code>)</label><input name="token" autocomplete="off">
+    <label>Bridge (sysbridge — this page's own origin when served from it)</label><input name="bridge" placeholder="http://localhost">
+    <label>Bridge token (needed for Load/Unload; shared with the launcher and other apps; from <code>python -m bridge --token</code>)</label><input name="token" autocomplete="off">
+    <label>llama-servers (configured on the bridge: <code>SYSBRIDGE_LLAMA_SERVERS</code>, read-only here)</label>
+    <dl id="upstreams" style="display:grid;grid-template-columns:auto 1fr;gap:.15rem .8rem;font-size:.85rem;margin:.3rem 0"></dl>
     <div class="actions">
       <button type="button" id="settingsReset">Defaults</button>
       <button type="submit" class="primary">Save</button>
@@ -154,14 +153,13 @@
 <script>
 'use strict';
 // ---------------------------------------------------------------- settings
-// Served by the bridge at /apps/llama-dash/ → the bridge is this page's own origin.
-// Opened from file:// or elsewhere → the launcher's default, http://localhost (port 80).
+// This app talks to exactly one thing: the bridge. Served from /apps/llama-dash/ that is its own
+// origin; opened from file:// it is http://localhost. The llama-servers themselves are the bridge's
+// upstreams (SYSBRIDGE_LLAMA_SERVERS) and arrive as the `llama` / `llama_slots` probes.
 const SERVED_BY_BRIDGE = location.pathname.startsWith('/apps/');
-const DEFAULTS = { router: 'http://127.0.0.1:8080', reviewer: 'http://127.0.0.1:8127',
-                   bridge: SERVED_BY_BRIDGE ? location.origin : 'http://localhost', token: '' };
-// Same-origin apps share one localStorage: own keys are prefixed app:<slug>:, the token key is shared on purpose.
-const LS_KEY = 'app:llama-dash:settings';
-const TOKEN_KEY = 'sysbridge.token';
+const DEFAULTS = { bridge: SERVED_BY_BRIDGE ? location.origin : 'http://localhost', token: '' };
+const LS_KEY = 'app:llama-dash:settings';      // same-origin apps share one localStorage: prefix own keys
+const TOKEN_KEY = 'sysbridge.token';            // shared on purpose with the launcher and other apps
 let S = loadSettings();
 function loadSettings() {
   let s = {}; try { s = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch (e) {}
@@ -185,93 +183,69 @@ const fmtInt = n => n == null ? '—' : Number(n).toLocaleString();
 const fmtF = x => x == null ? '—' : String(+Number(x).toPrecision(3));
 const pct = (a, b) => (b > 0 ? Math.min(100, 100 * a / b) : 0);
 
-// Every router GET carries autoload=false. /props?model=<unloaded> would otherwise load it.
-function routerURL(path, params = {}) {
-  const u = new URL(trim(S.router) + path);
-  for (const [k, v] of Object.entries(params)) if (v != null) u.searchParams.set(k, v);
-  u.searchParams.set('autoload', 'false');
-  return u.toString();
-}
 async function getJSON(url, { timeout = 4000, ...opts } = {}) {
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeout);
   try {
     const r = await fetch(url, { ...opts, signal: ctl.signal, cache: 'no-store' });
     const text = await r.text();
     let body = null; try { body = text ? JSON.parse(text) : null; } catch (e) { body = { raw: text }; }
-    if (!r.ok) { const msg = body?.error?.message || body?.error || text || r.statusText; throw new Error(`HTTP ${r.status}: ${msg}`); }
+    if (!r.ok) { const e = new Error(body?.error?.message || body?.error || text || r.statusText); e.status = r.status; throw e; }
     return body;
   } finally { clearTimeout(t); }
 }
 const errText = e => e?.name === 'AbortError' ? 'timeout' : (e?.message || String(e));
 
 // ---------------------------------------------------------------- state
-const state = {
-  servers: {},          // key -> { ok, health, props, mode, err }
-  models: [],           // router /models data[]
-  modelsErr: '',
-  slots: {},            // key -> { rows, err }
-  bridge: null,         // last /v1/all body, or null when unreachable
-  bridgeErr: '',
-  busy: false,          // a load/unload POST is in flight
-};
+// One request per tick: /v1/all with every probe this page draws. The bridge caches each probe at
+// its own TTL, so asking every second costs a few sysfs reads plus whatever is actually stale.
+const PROBES = 'llama,llama_slots,gpu,ram,cpu,disk,battery,rocm_pids,router_models';
+const state = { all: null, err: '', busy: false, ts: 0 };
 const openDetails = new Set();
 let paused = false;
 
+const R = () => state.all?.results || {};
+const P = name => { const e = R()[name]; return e && e.data ? e.data : null; };   // data, even when stale
+const servers = () => Object.values(P('llama')?.servers || {});
+const router = () => servers().find(s => s.mode === 'router') || servers()[0] || null;
+const routerModels = () => router()?.models || [];
+const bridgeModelInfo = id => (P('router_models')?.models || []).find(m => m.id === id) || null;
+const anyLoading = () => routerModels().some(m => ['loading', 'downloading'].includes(m.status?.value));
+
+async function poll() {
+  const b = trim(S.bridge);
+  if (!b) { state.all = null; state.err = 'no bridge URL set'; renderAll(); return; }
+  try { state.all = await getJSON(`${b}/v1/all?names=${PROBES}`, { timeout: 3500 }); state.err = ''; state.ts = Date.now(); }
+  catch (e) { state.err = `bridge not answering at ${b}: ${errText(e)}`; }
+  renderAll();
+}
+function renderAll() { renderServers(); renderModels(); renderActivity(); renderSystem(); stamp(); }
+const badge = env => env?.stale ? ' <span class="pill stale" title="cached value; the bridge could not refresh it">stale</span>' : '';
+
 // ---------------------------------------------------------------- servers panel
-function serverList() {
-  const l = [{ key: 'router', label: 'Router', url: trim(S.router) }];
-  if (trim(S.reviewer)) l.push({ key: 'reviewer', label: 'Reviewer', url: trim(S.reviewer) });
-  return l;
-}
-// Router shape: {data:[{status:{value}}]}. Single-model: {models:[ollama-stub], data:[…]} with no status.
-function inferMode(models) {
-  const data = Array.isArray(models?.data) ? models.data : [];
-  if (data.some(m => m && m.status && typeof m.status.value === 'string')) return 'router';
-  if (Array.isArray(models?.models) || data.length) return 'single';
-  return 'unknown';
-}
-async function pollServers() {
-  for (const sv of serverList()) {
-    const cur = state.servers[sv.key] || {};
-    try {
-      const health = await getJSON(sv.url + '/health?autoload=false');
-      let models = null, props = null, mode = cur.mode || 'unknown';
-      try { models = await getJSON(sv.url + '/models?autoload=false'); mode = inferMode(models); } catch (e) { /* keep last mode */ }
-      if (sv.key === 'router') {
-        state.models = Array.isArray(models?.data) ? models.data : state.models; state.modelsErr = '';
-        const loaded = state.models.find(m => m.status?.value === 'loaded');
-        if (loaded) { try { props = await getJSON(routerURL('/props', { model: loaded.id })); } catch (e) {} }
-      } else {
-        try { props = await getJSON(sv.url + '/props'); } catch (e) {}
-      }
-      state.servers[sv.key] = { ok: health?.status === 'ok', health, props, mode, models, err: '' };
-    } catch (e) {
-      state.servers[sv.key] = { ...cur, ok: false, err: errText(e) };
-      if (sv.key === 'router') state.modelsErr = `router unreachable at ${sv.url}: ${errText(e)}`;
-    }
-  }
-  renderServers(); renderModels();
-}
 function renderServers() {
-  $('servers').innerHTML = serverList().map(sv => {
-    const s = state.servers[sv.key] || {}; const p = s.props || {};
-    const pill = s.ok ? '<span class="pill ok">healthy</span>' : `<span class="pill bad">${s.err ? 'down' : '…'}</span>`;
-    const single = s.models?.data?.[0];
+  const env = R().llama;
+  $('serversErr').textContent = state.err || (env && !env.ok && !env.data ? `llama probe: ${env.error?.message}` : '');
+  const list = servers();
+  if (!list.length) { $('servers').innerHTML = state.all ? '<div class="muted">the bridge has no llama servers configured (SYSBRIDGE_LLAMA_SERVERS)</div>' : ''; return; }
+  $('servers').innerHTML = list.map(sv => {
+    const p = sv.props || {};
+    const pill = sv.ok ? '<span class="pill ok">healthy</span>' : '<span class="pill bad">down</span>';
     const rows = [
       ['url', esc(sv.url)],
-      ['mode', s.mode === 'router' ? 'router (multi-model)' : s.mode === 'single' ? 'single model' : '—'],
+      ['mode', sv.mode === 'router' ? 'router (multi-model)' : sv.mode === 'single' ? 'single model' : '—'],
       ['build', esc(p.build_info || '—')],
       ['slots', p.total_slots ?? '—'],
     ];
-    if (sv.key === 'router') {
-      const n = state.models.length, loaded = state.models.filter(m => m.status?.value === 'loaded').map(m => m.id);
+    if (sv.mode === 'router') {
+      const n = sv.models.length, loaded = sv.models.filter(m => m.status?.value === 'loaded').map(m => m.id);
       rows.push(['presets', n ? `${n} (${loaded.length ? 'loaded: ' + esc(loaded.join(', ')) : 'none loaded'})` : '—']);
-    } else if (single) {
-      rows.push(['model', esc(p.model_alias || single.id || '—')], ['ctx', fmtK(single.meta?.n_ctx)], ['size', fmtBytes(single.meta?.size)]);
+    } else if (sv.models[0]) {
+      const m = sv.models[0];
+      rows.push(['model', esc(p.model_alias || m.id || '—')], ['ctx', fmtK(m.meta?.n_ctx)], ['size', fmtBytes(m.meta?.size)]);
     }
     if (p.is_sleeping) rows.push(['state', '<span class="pill sleeping">sleeping</span>']);
-    if (s.err) rows.push(['error', `<span class="err">${esc(s.err)}</span>`]);
-    return `<div class="card"><div class="name">${esc(sv.label)} ${pill}</div><dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></div>`;
+    if (sv.error) rows.push(['error', `<span class="err">${esc(sv.error)}</span>`]);
+    return `<div class="card"><div class="name">${esc(sv.name)} ${pill}${badge(env)}</div><dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></div>`;
   }).join('');
 }
 
@@ -279,28 +253,22 @@ function renderServers() {
 function parsePreset(txt) {
   const o = {}; for (const line of String(txt || '').split('\n')) { const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*?)\s*$/); if (m) o[m[1]] = m[2]; } return o;
 }
-function bridgeModelInfo(id) {
-  const r = state.bridge?.results?.router_models; if (!r?.ok) return null;
-  return (r.data?.models || []).find(m => m.id === id) || null;
-}
-function anyLoading() { return state.models.some(m => ['loading', 'downloading'].includes(m.status?.value)); }
 let modelsSig = '';
 function renderModels() {
-  const ms = state.models;
-  $('modelsErr').textContent = state.modelsErr;
-  $('modelsSub').textContent = ms.length ? `${ms.length} presets · live via /models/sse, poll 5 s` : '';
-  if (!ms.length) { $('models').innerHTML = ''; modelsSig = ''; return; }
-  const disabled = state.busy || anyLoading();
-  const hasBridge = !!state.bridge;
+  const rt = router(); const ms = routerModels();
+  $('modelsErr').textContent = state.actErr || '';
+  $('modelsSub').textContent = rt ? `${esc(rt.name)} · ${ms.length} presets · via the bridge, 1 s` : '';
+  if (!ms.length) { $('models').innerHTML = rt ? '' : '<tr><td class="muted">no router configured</td></tr>'; modelsSig = ''; return; }
+  const disabled = state.busy || anyLoading() || !rt.ok;
   // Only touch the DOM when something visible changed: keeps expanders, selections and focus stable.
-  const sig = JSON.stringify([disabled, hasBridge, ms.map(m => [m.id, m.status?.value, m.meta?.size, bridgeModelInfo(m.id)?.size_bytes])]);
-  if (sig === modelsSig) { if (!hasBridge && ms.some(m => !m.meta)) $('modelsSub').textContent += ' · sizes of unloaded models need the bridge'; return; }
+  const sig = JSON.stringify([disabled, ms.map(m => [m.id, m.status?.value, m.meta?.size, bridgeModelInfo(m.id)?.size_bytes])]);
+  if (sig === modelsSig) return;
   modelsSig = sig;
   const head = `<tr><th>model</th><th>status</th><th class="num">size</th><th class="num">params</th><th class="num">ctx</th><th>modalities</th><th>controls</th></tr>`;
   const rows = ms.map(m => {
     const st = m.status?.value || 'unknown'; const meta = m.meta; const preset = parsePreset(m.status?.preset);
     const bi = bridgeModelInfo(m.id);
-    const size = meta ? fmtBytes(meta.size) : bi?.size_bytes != null ? `<span class="muted" title="file size via bridge">${fmtBytes(bi.size_bytes)}</span>` : '<span class="muted">—</span>';
+    const size = meta ? fmtBytes(meta.size) : bi?.size_bytes != null ? `<span class="muted" title="file size on disk${bi.shards > 1 ? `, ${bi.shards} shards` : ''}">${fmtBytes(bi.size_bytes)}</span>` : '<span class="muted">—</span>';
     const params = meta ? fmtParams(meta.n_params) : '<span class="muted">—</span>';
     const ctx = meta ? fmtK(meta.n_ctx) : preset['ctx-size'] ? `<span class="muted" title="from preset">${fmtK(+preset['ctx-size'])}</span>` : '—';
     const mods = (m.architecture?.input_modalities || []).join(', ') || '—';
@@ -318,34 +286,19 @@ function renderModels() {
       `<td class="num">${size}</td><td class="num">${params}</td><td class="num">${ctx}</td><td>${esc(mods)}</td><td>${ctl}</td></tr>`;
   }).join('');
   $('models').innerHTML = head + rows;
-  if (!hasBridge && ms.some(m => !m.meta)) $('modelsSub').textContent += ' · sizes of unloaded models need the bridge';
 }
 $('models').addEventListener('toggle', e => { const d = e.target; if (d.tagName === 'DETAILS') { d.open ? openDetails.add(d.dataset.id) : openDetails.delete(d.dataset.id); } }, true);
 $('models').addEventListener('click', e => { const b = e.target.closest('button[data-act]'); if (b) confirmAction(b.dataset.act, b.dataset.id); });
 
-// SSE: change signal only. Refresh /models on any event; fall back to the 5 s poll.
-let sse = null;
-function connectSSE() {
-  if (sse) { sse.close(); sse = null; }
-  if (!trim(S.router) || !('EventSource' in window)) return;
-  try {
-    sse = new EventSource(routerURL('/models/sse'));
-    const bump = () => { if (!paused) pollServers(); };
-    sse.onmessage = bump;
-    for (const ev of ['model_status', 'download_progress', 'model_remove', 'models_reload']) sse.addEventListener(ev, bump);
-    sse.onerror = () => { /* EventSource retries by itself; the poll covers the gap */ };
-  } catch (e) { sse = null; }
-}
-
-// ---------------------------------------------------------------- controls
+// ---------------------------------------------------------------- controls (through the bridge, token-gated)
 async function confirmAction(act, id) {
-  const m = state.models.find(x => x.id === id); if (!m) return;
-  const loaded = state.models.filter(x => x.status?.value === 'loaded' && x.id !== id);
+  const rt = router(); const m = routerModels().find(x => x.id === id); if (!rt || !m) return;
+  const loaded = routerModels().filter(x => x.status?.value === 'loaded' && x.id !== id);
   const bi = bridgeModelInfo(id);
   let title, body;
   if (act === 'load') {
     title = `Load ${id}?`;
-    const fileSz = bi?.size_bytes != null ? fmtBytes(bi.size_bytes + (bi.mmproj_size_bytes || 0)) : 'unknown (bridge not reachable)';
+    const fileSz = bi?.size_bytes != null ? fmtBytes(bi.size_bytes + (bi.mmproj_size_bytes || 0)) : 'unknown';
     if (loaded.length) {
       const y = loaded[0];
       body = `<div class="consequence">Loading <b>${esc(id)}</b> will <b>evict ${esc(y.id)}</b> — the router keeps one model resident (models-max 1). ` +
@@ -359,6 +312,7 @@ async function confirmAction(act, id) {
     body = `<div class="consequence">Unloading <b>${esc(id)}</b> frees its ${fmtBytes(m.meta?.size)} of GPU memory. ` +
       `Any client that names it will trigger a cold reload on its next request (30–120 s). The preset stays in the router; nothing is removed.</div>`;
   }
+  if (!S.token) body += `<div class="err">The bridge needs your token for this. Paste it in Settings (python -m bridge --token).</div>`;
   $('confirmTitle').textContent = title; $('confirmBody').innerHTML = body;
   $('confirmYes').textContent = act === 'load' ? 'Load' : 'Unload';
   const dlg = $('confirmDlg');
@@ -369,142 +323,119 @@ async function confirmAction(act, id) {
     dlg.showModal();
   });
   if (!ok) return;
-  state.busy = true; renderModels();
+  state.busy = true; state.actErr = ''; renderModels();
   try {
-    const r = await getJSON(routerURL(`/models/${act}`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: id }), timeout: 15000 });
-    if (r?.success !== true) throw new Error('server did not report success: ' + JSON.stringify(r));
-    state.modelsErr = '';
+    const r = await getJSON(`${trim(S.bridge)}/v1/llama/${encodeURIComponent(rt.name)}/${act}`, {
+      method: 'POST', timeout: 30000,
+      headers: { 'Content-Type': 'application/json', 'X-Bridge-Token': S.token || '' },
+      body: JSON.stringify({ model: id, confirm: true }),
+    });
+    if (r?.ok !== true) throw new Error(r?.error || 'the router did not report success');
   } catch (e) {
-    state.modelsErr = `${act} ${id} failed — ${errText(e)}`;
-  } finally { state.busy = false; await pollServers(); }
+    state.actErr = `${act} ${id} failed — ${e.status === 401 ? 'wrong or missing token (Settings)' : errText(e)}`;
+  } finally { state.busy = false; modelsSig = ''; await poll(); }
 }
 
 // ---------------------------------------------------------------- activity panel
-async function pollSlots() {
-  const targets = [];
-  for (const m of state.models) if (m.status?.value === 'loaded') targets.push({ key: 'router:' + m.id, label: m.id, url: routerURL('/slots', { model: m.id }) });
-  if (trim(S.reviewer) && state.servers.reviewer?.ok) targets.push({ key: 'reviewer', label: state.servers.reviewer?.props?.model_alias || 'reviewer', url: trim(S.reviewer) + '/slots' });
-  const got = await Promise.all(targets.map(async t => {
-    try { const rows = await getJSON(t.url, { timeout: 2500 }); return { label: t.label, rows: Array.isArray(rows) ? rows : [], err: '' }; }
-    catch (e) { return { label: t.label, rows: [], err: errText(e) }; }
-  }));
-  const next = {}; targets.forEach((t, i) => { next[t.key] = got[i]; }); // router models first, then reviewer
-  state.slots = next; renderActivity();
-}
 function renderActivity() {
-  const keys = Object.keys(state.slots);
-  if (!keys.length) { $('activity').innerHTML = '<div class="muted">no loaded model to watch</div>'; $('activityErr').textContent = ''; return; }
-  $('activityErr').textContent = '';
-  $('activity').innerHTML = keys.map(k => {
-    const s = state.slots[k];
-    if (s.err) return `<div class="card"><div class="name">${esc(s.label)} <span class="pill bad">error</span></div><div class="err">${esc(s.err)}</div></div>`;
-    const busy = s.rows.some(r => r.is_processing);
-    const slots = s.rows.map(r => {
-      const nt = Array.isArray(r.next_token) ? r.next_token[0] : r.next_token; const p = r.params || {};
-      const rows = [
-        ['state', r.is_processing ? '<span class="pill busy">generating</span>' : '<span class="pill idle">idle</span>'],
-        ['task', r.id_task ?? '—'],
-        ['prompt tokens', `${fmtInt(r.n_prompt_tokens)}${r.n_prompt_tokens_cache ? ` <span class="muted">(${fmtInt(r.n_prompt_tokens_cache)} from cache)</span>` : ''}`],
-        ['decoded', fmtInt(nt?.n_decoded)],
-        ['ctx', fmtK(r.n_ctx)],
-      ];
-      if (p.temperature != null) rows.push(['sampling', `T ${fmtF(p.temperature)} · top_k ${p.top_k} · top_p ${fmtF(p.top_p)} · min_p ${fmtF(p.min_p)} · max ${fmtInt(p.max_tokens)}`]);
-      if (p['speculative.types'] && p['speculative.types'] !== 'none') rows.push(['speculative', esc(p['speculative.types'])]);
-      if (p.reasoning_format) rows.push(['reasoning', esc(p.reasoning_format)]);
-      return `<dl><dt>slot</dt><dd>${r.id}</dd>${rows.map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('')}</dl>`;
-    }).join('');
-    return `<div class="card"><div class="name">${esc(s.label)} ${busy ? '<span class="pill busy">busy</span>' : '<span class="pill idle">idle</span>'} <span class="muted" style="font-weight:400;font-size:.8rem">${s.rows.length} slot${s.rows.length === 1 ? '' : 's'}</span></div>${slots}</div>`;
-  }).join('');
+  const env = R().llama_slots; const data = P('llama_slots');
+  const cards = [];
+  for (const [name, sv] of Object.entries(data?.servers || {})) {
+    for (const [label, entry] of Object.entries(sv.models || {})) {
+      if (entry.error) { cards.push(`<div class="card"><div class="name">${esc(label)} <span class="pill bad">error</span></div><div class="err">${esc(entry.error)}</div></div>`); continue; }
+      const rows = entry.slots || []; const busy = rows.some(r => r.is_processing);
+      const slots = rows.map(r => {
+        const nt = Array.isArray(r.next_token) ? r.next_token[0] : r.next_token; const p = r.params || {};
+        const kv = [
+          ['state', r.is_processing ? '<span class="pill busy">generating</span>' : '<span class="pill idle">idle</span>'],
+          ['task', r.id_task ?? '—'],
+          ['prompt tokens', `${fmtInt(r.n_prompt_tokens)}${r.n_prompt_tokens_cache ? ` <span class="muted">(${fmtInt(r.n_prompt_tokens_cache)} from cache)</span>` : ''}`],
+          ['decoded', fmtInt(nt?.n_decoded)],
+          ['ctx', fmtK(r.n_ctx)],
+        ];
+        if (p.temperature != null) kv.push(['sampling', `T ${fmtF(p.temperature)} · top_k ${p.top_k} · top_p ${fmtF(p.top_p)} · min_p ${fmtF(p.min_p)} · max ${fmtInt(p.max_tokens)}`]);
+        if (p['speculative.types'] && p['speculative.types'] !== 'none') kv.push(['speculative', esc(p['speculative.types'])]);
+        if (p.reasoning_format) kv.push(['reasoning', esc(p.reasoning_format)]);
+        return `<dl><dt>slot</dt><dd>${r.id}</dd>${kv.map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('')}</dl>`;
+      }).join('');
+      cards.push(`<div class="card"><div class="name">${esc(label)} ${busy ? '<span class="pill busy">busy</span>' : '<span class="pill idle">idle</span>'}${badge(env)} <span class="muted" style="font-weight:400;font-size:.8rem">${esc(name)} · ${rows.length} slot${rows.length === 1 ? '' : 's'}</span></div>${slots}</div>`);
+    }
+  }
+  $('activity').innerHTML = cards.join('') || '<div class="muted">no loaded model to watch</div>';
 }
 
-// ---------------------------------------------------------------- system panel (bridge)
-const BRIDGE_PROBES = 'gpu,ram,cpu,disk,battery,rocm_pids,router_models';
-async function pollBridge() {
-  const b = trim(S.bridge);
-  if (!b) { state.bridge = null; renderSystem(); return; }
-  try { state.bridge = await getJSON(`${b}/v1/all?names=${BRIDGE_PROBES}`, { timeout: 3000 }); state.bridgeErr = ''; }
-  catch (e) { state.bridge = null; state.bridgeErr = errText(e); }
-  renderSystem();
-  if (state.bridge) renderModels(); // unloaded-model sizes come from router_models
-}
+// ---------------------------------------------------------------- system panel
 function bar(used, total, over) {
   const w = pct(used, total).toFixed(1);
   const o = over != null ? `<i class="over" style="width:${pct(over, total).toFixed(1)}%"></i>` : '';
   return `<div class="bar">${o}<i style="width:${w}%"></i></div>`;
 }
-function envelopeBadge(env) { return env?.stale ? ' <span class="pill stale" title="cached value; last refresh failed">stale</span>' : ''; }
 function renderSystem() {
   const sec = $('systemSec');
-  if (!state.bridge) { sec.hidden = true; return; }
+  const gpu = P('gpu'), ram = P('ram'), cpu = P('cpu');
+  if (!state.all || (!gpu && !ram && !cpu)) { sec.hidden = true; return; }
   sec.hidden = false;
-  const R = state.bridge.results || {};
-  $('bridgeStamp').textContent = '· ' + new Date((state.bridge.ts || 0) * 1000).toLocaleTimeString();
-  const errs = Object.values(R).filter(e => e && !e.ok && e.error).map(e => `${e.name}: ${e.error.message}`);
-  $('systemErr').textContent = errs.join('\n');
+  const Rr = R();
+  $('bridgeStamp').textContent = '· ' + new Date((state.all.ts || 0) * 1000).toLocaleTimeString();
+  $('systemErr').textContent = ['gpu', 'ram', 'cpu', 'disk', 'battery', 'rocm_pids'].filter(n => Rr[n] && !Rr[n].ok && !Rr[n].data).map(n => `${n}: ${Rr[n].error?.message}`).join('\n');
   const out = [];
-  const gpu = R.gpu?.ok ? R.gpu.data : null, ram = R.ram?.ok ? R.ram.data : null, cpu = R.cpu?.ok ? R.cpu.data : null;
-  if (gpu || ram) {
-    let h = `<div class="kv">`;
-    if (gpu?.gtt) h += `<div><b>GTT (GPU-accessible system RAM)${envelopeBadge(R.gpu)}</b>${fmtBytes(gpu.gtt.used)} / ${fmtBytes(gpu.gtt.total)}${bar(gpu.gtt.used, gpu.gtt.total)}</div>`;
-    if (gpu?.vram) h += `<div><b>VRAM (carve-out)</b>${fmtBytes(gpu.vram.used)} / ${fmtBytes(gpu.vram.total)}${bar(gpu.vram.used, gpu.vram.total)}</div>`;
-    if (ram) {
-      const u = ram.unified || {};
-      h += `<div><b>RAM${envelopeBadge(R.ram)} <span title="the purple share is GTT — GPU memory carved from the same RAM">(GTT overlaid)</span></b>${fmtBytes(ram.used)} used / ${fmtBytes(ram.total)} · ${fmtBytes(ram.available)} available${bar(ram.used, ram.total, u.gtt_used)}</div>`;
-      if (ram.swap?.total) h += `<div><b>swap</b>${fmtBytes(ram.swap.total - ram.swap.free)} / ${fmtBytes(ram.swap.total)}${bar(ram.swap.total - ram.swap.free, ram.swap.total)}</div>`;
-    }
-    h += `</div><div class="kv" style="margin-top:.5rem">`;
-    if (gpu) {
-      h += `<div><b>GPU busy <span title="on this APU busy% reads 100 whenever a model is resident; use Activity for real work">ⓘ</span></b>${gpu.busy_percent ?? '—'} %</div>`;
-      h += `<div><b>GPU temp</b>${gpu.temp_c != null ? gpu.temp_c.toFixed(0) + ' °C' : '—'}</div>`;
-      h += `<div><b>GPU power</b>${gpu.power_w != null ? gpu.power_w.toFixed(1) + ' W' : '—'}</div>`;
-      h += `<div><b>GPU clock</b>${gpu.sclk_mhz != null ? gpu.sclk_mhz + ' MHz' : '—'}</div>`;
-    }
-    if (cpu) {
-      h += `<div><b>CPU busy${envelopeBadge(R.cpu)}</b>${cpu.busy_percent != null ? cpu.busy_percent.toFixed(0) + ' %' : '—'} <span class="muted">· load ${(cpu.load || []).map(x => x.toFixed(2)).join(' ')}</span></div>`;
-      h += `<div><b>CPU temp</b>${cpu.temp_c != null ? cpu.temp_c.toFixed(0) + ' °C' : '—'}</div>`;
-    }
-    const bat = R.battery?.ok ? R.battery.data : null;
-    if (bat?.present) h += `<div><b>battery</b>${bat.capacity_percent ?? '—'} % · ${esc(bat.status || '')}${bat.ac_online ? ' · AC' : ''}${bat.power_w ? ' · ' + bat.power_w.toFixed(1) + ' W' : ''}</div>`;
-    h += `</div>`;
-    out.push(h);
+  let h = `<div class="kv">`;
+  if (gpu?.gtt) h += `<div><b>GTT (GPU-accessible system RAM)${badge(Rr.gpu)}</b>${fmtBytes(gpu.gtt.used)} / ${fmtBytes(gpu.gtt.total)}${bar(gpu.gtt.used, gpu.gtt.total)}</div>`;
+  if (gpu?.vram) h += `<div><b>VRAM (carve-out)</b>${fmtBytes(gpu.vram.used)} / ${fmtBytes(gpu.vram.total)}${bar(gpu.vram.used, gpu.vram.total)}</div>`;
+  if (ram) {
+    const u = ram.unified || {};
+    h += `<div><b>RAM${badge(Rr.ram)} <span title="the purple share is GTT — GPU memory carved from the same RAM">(GTT overlaid)</span></b>${fmtBytes(ram.used)} used / ${fmtBytes(ram.total)} · ${fmtBytes(ram.available)} available${bar(ram.used, ram.total, u.gtt_used)}</div>`;
+    if (ram.swap?.total) h += `<div><b>swap</b>${fmtBytes(ram.swap.total - ram.swap.free)} / ${fmtBytes(ram.swap.total)}${bar(ram.swap.total - ram.swap.free, ram.swap.total)}</div>`;
   }
-  const rp = R.rocm_pids?.ok ? R.rocm_pids.data : null;
+  h += `</div><div class="kv" style="margin-top:.5rem">`;
+  if (gpu) {
+    h += `<div><b>GPU busy <span title="on this APU busy% reads 100 whenever a model is resident; use Activity for real work">ⓘ</span></b>${gpu.busy_percent ?? '—'} %</div>`;
+    h += `<div><b>GPU temp</b>${gpu.temp_c != null ? gpu.temp_c.toFixed(0) + ' °C' : '—'}</div>`;
+    h += `<div><b>GPU power</b>${gpu.power_w != null ? gpu.power_w.toFixed(1) + ' W' : '—'}</div>`;
+    h += `<div><b>GPU clock</b>${gpu.sclk_mhz != null ? gpu.sclk_mhz + ' MHz' : '—'}</div>`;
+  }
+  if (cpu) {
+    h += `<div><b>CPU busy${badge(Rr.cpu)}</b>${cpu.busy_percent != null ? cpu.busy_percent.toFixed(0) + ' %' : '—'} <span class="muted">· load ${(cpu.load || []).map(x => x.toFixed(2)).join(' ')}</span></div>`;
+    h += `<div><b>CPU temp</b>${cpu.temp_c != null ? cpu.temp_c.toFixed(0) + ' °C' : '—'}</div>`;
+  }
+  const bat = P('battery');
+  if (bat?.present) h += `<div><b>battery</b>${bat.capacity_percent ?? '—'} % · ${esc(bat.status || '')}${bat.ac_online ? ' · AC' : ''}${bat.power_w ? ' · ' + bat.power_w.toFixed(1) + ' W' : ''}</div>`;
+  h += `</div>`;
+  out.push(h);
+  const rp = P('rocm_pids');
   if (rp?.processes?.length) {
-    out.push(`<h2 style="margin-top:1rem">GPU-holding processes <span class="sub">rocm-smi --showpids${envelopeBadge(R.rocm_pids)}</span></h2><div class="tablewrap"><table><tr><th>pid</th><th>process</th><th class="num">compute memory</th><th>gpu</th></tr>` +
+    out.push(`<h2 style="margin-top:1rem">GPU-holding processes <span class="sub">rocm-smi --showpids${badge(Rr.rocm_pids)}</span></h2><div class="tablewrap"><table><tr><th>pid</th><th>process</th><th class="num">compute memory</th><th>gpu</th></tr>` +
       rp.processes.slice().sort((a, b) => (b.vram_used || 0) - (a.vram_used || 0)).map(p => `<tr><td>${p.pid}</td><td>${esc(p.name)}</td><td class="num">${fmtBytes(p.vram_used)}</td><td>${esc(p.gpus ?? '')}</td></tr>`).join('') + '</table></div>');
   }
-  const dk = R.disk?.ok ? R.disk.data : null;
+  const dk = P('disk');
   if (dk?.filesystems?.length) {
-    out.push(`<h2 style="margin-top:1rem">Disk${envelopeBadge(R.disk)}</h2><div class="tablewrap"><table><tr><th>mount</th><th>fs</th><th class="num">used</th><th class="num">avail</th><th style="width:30%">&nbsp;</th></tr>` +
+    out.push(`<h2 style="margin-top:1rem">Disk${badge(Rr.disk)}</h2><div class="tablewrap"><table><tr><th>mount</th><th>fs</th><th class="num">used</th><th class="num">avail</th><th style="width:30%">&nbsp;</th></tr>` +
       dk.filesystems.map(f => `<tr><td>${esc(f.target)} <span class="muted">${esc(f.source)}</span></td><td>${esc(f.fstype)}</td><td class="num">${fmtBytes(f.used)}</td><td class="num">${fmtBytes(f.avail)}</td><td>${bar(f.used, f.size)}</td></tr>`).join('') + '</table></div>');
   }
-  $('system').innerHTML = out.join('') || '<div class="muted">bridge answered but no probe data</div>';
+  $('system').innerHTML = out.join('');
 }
 
 // ---------------------------------------------------------------- scheduling
-const timers = {};
-function every(name, ms, fn) { clearInterval(timers[name]); timers[name] = setInterval(() => { if (!paused) fn().catch(() => {}).finally(stamp); }, ms); }
-function stamp() { $('stamp').textContent = new Date().toLocaleTimeString(); }
-async function refreshAll() { await pollServers(); await Promise.all([pollSlots(), pollBridge()]); stamp(); }
-function start() {
-  connectSSE();
-  every('servers', 5000, pollServers);
-  every('slots', 1000, pollSlots);
-  every('bridge', 2000, pollBridge);
-  refreshAll();
-}
+let timer = null;
+function stamp() { $('stamp').textContent = state.ts ? new Date(state.ts).toLocaleTimeString() : '—'; }
+function start() { clearInterval(timer); timer = setInterval(() => { if (!paused) poll(); }, 1000); poll(); }
 document.addEventListener('visibilitychange', () => {
   paused = document.hidden; $('pausedFlag').hidden = !paused;
-  if (paused) { if (sse) { sse.close(); sse = null; } } else { connectSSE(); refreshAll(); }
+  if (!paused) poll();
 });
 
 // ---------------------------------------------------------------- settings UI
 const form = $('settingsForm');
-$('settingsBtn').addEventListener('click', () => { for (const k of Object.keys(DEFAULTS)) form.elements[k].value = S[k] || ''; $('settingsDlg').showModal(); });
+$('settingsBtn').addEventListener('click', () => {
+  for (const k of Object.keys(DEFAULTS)) form.elements[k].value = S[k] || '';
+  const list = servers();
+  $('upstreams').innerHTML = list.length ? list.map(sv => `<dt>${esc(sv.name)}</dt><dd>${esc(sv.url)} — ${sv.ok ? 'healthy' : 'down'}</dd>`).join('') : '<dd class="muted">none reported yet</dd>';
+  $('settingsDlg').showModal();
+});
 $('settingsReset').addEventListener('click', () => { for (const k of Object.keys(DEFAULTS)) form.elements[k].value = DEFAULTS[k]; });
 form.addEventListener('submit', () => {
   const s = {}; for (const k of Object.keys(DEFAULTS)) s[k] = form.elements[k].value.trim();
-  saveSettings(s); state.servers = {}; state.models = []; state.slots = {}; state.bridge = null; start();
+  saveSettings(s); state.all = null; modelsSig = ''; start();
 });
 
 start();

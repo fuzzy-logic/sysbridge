@@ -466,6 +466,26 @@ dashboard are the llama-servers it monitors, not where it is served. The only
 thing that leaves port 80 is a **link tile**, whose whole job is to open
 another URL.
 
+### Addendum 2026-09-22 — the dashboard is an ordinary app
+
+The dashboard used to be the one app that called the llama-servers on :8080
+and :8127 directly from the browser. Now the bridge does that and the
+dashboard talks only to its own origin, like any upload:
+
+- `bridge/llama.py`: probes `llama` (health, mode, props, models per server,
+  2 s, async) and `llama_slots` (per loaded model `/slots`, 1 s, async);
+  upstreams from `SYSBRIDGE_LLAMA_SERVERS` (`name=url,…`, default router :8080
+  + reviewer :8127). Every router GET carries `autoload=false` inside the
+  bridge, so no app can load a model by accident.
+- `POST /v1/llama/<server>/load|unload` `{"model", "confirm": true}`: token +
+  origin gated like actions; the model id must be one the router lists; 409
+  for a single-model server. The bridge force-refreshes `llama` afterwards.
+- The dashboard polls one `/v1/all` per second on its own origin; router and
+  reviewer URLs left its settings (they are bridge config, shown read-only).
+  Its network tab shows only `localhost`.
+- `SYSBRIDGE_ROUTER_URL` is gone; `router_models` uses the upstream named
+  `router`. 64 tests, including a fake llama-server for `llama.py`.
+
 ## Phase 4 — per-app command permissions (idea, not scheduled)
 
 An app declares the CLI commands it wants (in its manifest / a meta tag); the

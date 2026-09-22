@@ -97,6 +97,13 @@ Because every app shares the bridge's origin:
 | `processes` | 3 s | `rows[{pid, comm, pcpu, rss}]` top 50 by CPU |
 | `ports` | 5 s | `listeners[{proto, addr, port, process, pid}]` — process only for the bridge's own user |
 | `router_models` | 30 s | `url, models[{id, status, model_path, size_bytes, shards, mmproj_path, mmproj_size_bytes, ctx_size}]` — on-disk sizes of llama-server router presets, split GGUFs summed |
+| `llama` | 2 s | `servers{name: {name, url, ok, mode: router|single|unknown, health, props, models[], error}}` — the llama-servers in `SYSBRIDGE_LLAMA_SERVERS`; `models[]` is the server's own `/models` `data[]` (router: `status.value`, `meta` when loaded) |
+| `llama_slots` | 1 s | `servers{name: {ok, models{label: {slots[], error}}}}` — `/slots` per loaded model; `slots[].is_processing` is the "generating now" signal |
+
+**Do not call llama-server from an app.** Read the `llama`/`llama_slots` probes
+and `POST /v1/llama/<server>/load|unload` `{"model", "confirm": true}` with the
+token. The bridge adds `autoload=false` to every router GET so no app can load
+a model by accident, and it refuses model ids the router does not list.
 
 Ask for only what you draw: `/v1/all?names=gpu,ram,cpu` is three sysfs reads;
 `/v1/all` with no names also runs `rocm-smi`, `ps` and `ss`. Slow probes
@@ -167,9 +174,10 @@ async function bridgeAction(name, confirm = true) {
 // usage: const all = await bridgeAll(['gpu','ram']); if (!all) hideSystemPanel(); else draw(all.results.gpu)
 ```
 
-## llama-server endpoints a dashboard needs (so you don't rediscover them)
+## llama-server endpoints, for the bridge side (apps use the probes above)
 
 Verified on the EngramHalo.cpp fork, `build_info b1-c26c2ea`, 2026-09-22.
+These are what `bridge/llama.py` calls; an app never needs them directly.
 
 - **CORS**: llama-server reflects any Origin including `null`; methods
   `GET, POST, DELETE, OPTIONS`. Call it directly.
@@ -205,7 +213,7 @@ Verified on the EngramHalo.cpp fork, `build_info b1-c26c2ea`, 2026-09-22.
 - [ ] Bridge stopped → system panel hidden, everything else still works
 - [ ] Model server stopped → its card turns unhealthy, page keeps polling and recovers
 - [ ] `stale` badge visible when a probe fails after having worked
-- [ ] Every router GET carries `autoload=false` (check the network tab)
+- [ ] The app's network tab shows only its own origin — no direct llama-server calls
 - [ ] Confirm dialog text names the concrete consequence, read from live state
 - [ ] Token never appears in a URL or in the page's HTML
 - [ ] Nothing hardcodes `card1`, `hwmon4` or a PID

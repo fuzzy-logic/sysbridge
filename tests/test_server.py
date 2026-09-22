@@ -224,6 +224,38 @@ class ActionTests(unittest.TestCase):
 APP = "<!doctype html><title>Llama Manager</title><meta name=description content='Herd them'><meta name=app-icon content='🦙'><body>v1"
 
 
+class LlamaApiTests(unittest.TestCase):
+    """Gating only — the upstream logic is covered in test_llama with a fake server."""
+    @classmethod
+    def setUpClass(cls):
+        cls.fx = ServerFixture(actions_json=None)
+        cls.tok = cls.fx.srv.token
+        cls.H = {"X-Bridge-Token": cls.tok, "Origin": "null", "Content-Type": "application/json"}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.close()
+
+    def test_probes_listed(self):
+        st, _, b = self.fx.request("GET", "/v1/health")
+        self.assertIn("llama", b["probes"])
+        self.assertIn("llama_slots", b["probes"])
+
+    def test_gating(self):
+        st, _, b = self.fx.request("POST", "/v1/llama/router/load", {"Origin": "null", "Content-Type": "application/json"}, b'{"model":"x","confirm":true}')
+        self.assertEqual(st, 401)
+        st, h, _ = self.fx.request("POST", "/v1/llama/router/load", {**self.H, "Origin": "https://evil.example"}, b'{"model":"x","confirm":true}')
+        self.assertEqual(st, 403)
+        self.assertNotIn("access-control-allow-origin", h)
+        st, _, b = self.fx.request("POST", "/v1/llama/router/load", self.H, b'{"model":"x"}')
+        self.assertEqual(st, 400)
+        self.assertEqual(b["error"]["type"], "ConfirmRequired")
+        st, _, b = self.fx.request("POST", "/v1/llama/nosuch/load", self.H, b'{"model":"x","confirm":true}')
+        self.assertEqual(st, 404)
+        st, _, b = self.fx.request("POST", "/v1/llama/router/delete", self.H, b'{"model":"x","confirm":true}')
+        self.assertEqual(st, 404)
+
+
 class AppsApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

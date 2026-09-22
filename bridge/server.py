@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, urlsplit
 from . import __version__
 from .actions import Actions
 from .apps import Apps, AppsError, MAX_APP_BYTES, content_type_for, repo_builtins
+from . import llama
 from .probes import REG
 from .registry import error_envelope, valid_name
 from .util import xdg_runtime_dir
@@ -323,8 +324,10 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in urlsplit(self.path).path.split("/") if p]
         if parts == ["v1", "apps"]:
             return self._post_app(raw, origin)
+        if parts[:2] == ["v1", "llama"] and len(parts) == 4:
+            return self._post_llama(parts[2][:32], parts[3][:16], raw, origin)
         if parts[:2] != ["v1", "action"] or len(parts) != 3:
-            return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "POST only to /v1/action/{name} or /v1/apps"}}, origin)
+            return self._send(404, {"ok": False, "error": {"type": "NotFound", "message": "POST only to /v1/action/{name}, /v1/apps or /v1/llama/{server}/{load|unload}"}}, origin)
         name = parts[2][:64]
         acts = self.server.actions
         if not acts.enabled():
@@ -373,6 +376,25 @@ class Handler(BaseHTTPRequestHandler):
         print(f"sysbridge: app installed {m['slug']} kind={m['kind']} size={m['size']} replaced={m.get('replaced')} origin={origin or '-'}",
               file=sys.stderr, flush=True)
         return self._send(201, {"ok": True, "app": m}, origin)
+
+    def _post_llama(self, server: str, action: str, raw: Optional[bytes], origin: Optional[str]) -> None:
+        """Load/unload a router model. Token + confirm, like an action; the model must be one the router lists."""
+        if not self._token_ok():
+            return self._send(401, {"ok": False, "error": {"type": "Unauthorized", "message": "missing or wrong X-Bridge-Token"}}, origin)
+        try:
+            body = self._parse_json(raw or b"")
+        except ValueError as e:
+            return self._send(400, {"ok": False, "error": {"type": "BadRequest", "message": str(e)}}, origin)
+        if body.get("confirm") is not True:
+            return self._send(400, {"ok": False, "error": {"type": "ConfirmRequired", "message": 'load/unload needs {"confirm": true}'}}, origin)
+        try:
+            result = llama.load_unload(server, action, body.get("model"))
+        except llama.LlamaError as e:
+            return self._send(e.status, {"ok": False, "error": {"type": "LlamaError", "message": str(e)}}, origin)
+        print(f"sysbridge: llama {server} {action} {result['model']} ok={result['ok']} upstream={result['upstream_status']} origin={origin or '-'}",
+              file=sys.stderr, flush=True)
+        REG.get("llama", force=True)  # refresh the cache so the next poll shows the new state
+        return self._send(200 if result["ok"] else 502, result, origin)
 
     def do_DELETE(self) -> None:
         origin = self._origin()

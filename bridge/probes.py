@@ -15,15 +15,16 @@ import time
 import urllib.request
 from typing import Optional
 
-from . import parsers
+from . import llama, parsers
 from .registry import Registry
 from .util import first_amdgpu_card, hwmon_by_name, read_int, read_sysfs, read_text, run
 
 REG = Registry()
 probe = REG.probe
 
-# Optional: the llama-server router whose presets the dashboard wants file sizes for.
-ROUTER_URL = os.environ.get("SYSBRIDGE_ROUTER_URL", "http://127.0.0.1:8080")
+# The llama-server router whose presets the dashboard wants file sizes for:
+# the upstream named "router" in SYSBRIDGE_LLAMA_SERVERS (else the first one).
+ROUTER_URL = llama.SERVERS.get("router") or next(iter(llama.SERVERS.values()), "http://127.0.0.1:8080")
 
 
 # ------------------------------------------------------------------ gpu
@@ -299,3 +300,7 @@ def _int_or_none(s: Optional[str]) -> Optional[int]:
         return int(s) if s is not None else None
     except ValueError:
         return None
+
+
+# llama-server upstreams as probes (llama, llama_slots) — see llama.py
+llama.register(REG)

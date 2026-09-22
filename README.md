@@ -10,7 +10,9 @@ stdlib, zero dependencies, no build step.
 
 It ships with one app built in, **Llama Dashboard**: what a `llama-server`
 **router** is doing right now — which model is resident, who is generating,
-how much GPU memory each process holds — with confirm-guarded load/unload.
+how much GPU memory each process holds — with confirm-guarded load/unload. It
+is an ordinary app: it talks only to the bridge, and the bridge talks to the
+llama-servers.
 Install more by uploading an `.html` file from the launcher; add tiles that
 link to UIs on other ports so you never remember a port again.
 
@@ -19,10 +21,10 @@ http://localhost/                    launcher: grid of installed apps
 http://localhost/apps/llama-dash/    built-in Llama Dashboard
 http://localhost/apps/<slug>/        anything you upload; link tiles 302 to their URL
 http://localhost/v1/...              the API every app uses (same origin, no CORS dance)
-        │ GET /v1/all  POST /v1/action/…  POST /v1/apps
+        │ GET /v1/all  POST /v1/action/…  POST /v1/apps  POST /v1/llama/…
         ▼
-  sysbridge  →  /sys /proc rocm-smi xrt-smi df ss ps     and, from the apps themselves:
-                                                          llama-server router :8080, reviewer :8127
+  sysbridge  →  /sys /proc rocm-smi xrt-smi df ss ps
+             →  llama-server router :8080, reviewer :8127   (SYSBRIDGE_LLAMA_SERVERS)
 ```
 
 ## What is measured, and why the design looks like this
@@ -138,6 +140,7 @@ header, responses capped at 1 MiB.
 | GET | `/apps` | installed apps' manifests, built-ins first |
 | POST | `/apps` | install: body `text/html` = the page (≤ 4 MiB, optional `X-Filename`), or `application/json` `{"kind":"link","url",…}`; token required |
 | DELETE | `/apps/{slug}` | uninstall to `.trash/`; token + `{"confirm": true}`; 403 for built-ins |
+| POST | `/llama/{server}/load` `…/unload` | `{"model": id, "confirm": true}`; token; the model must be one the router lists; 409 for a single-model server |
 
 Outside `/v1`: `/` is the launcher, `/apps/<slug>/…` serves an app's files
 (slug validated, no traversal, no listings; link apps 302).
@@ -147,7 +150,10 @@ the value is the last good one and the refresh failed — clients keep it and
 badge it.
 
 Probes: `gpu` `cpu` `ram` `disk` `battery` `npu` `rocm_pids` `kfd_holders`
-`processes` `ports` `router_models`. `python -m bridge --list` prints them with
+`processes` `ports` `router_models` `llama` `llama_slots`. The last three watch
+the llama-servers named in `SYSBRIDGE_LLAMA_SERVERS` (default
+`router=http://127.0.0.1:8080,reviewer=http://127.0.0.1:8127`); every router
+GET the bridge makes carries `autoload=false`. `python -m bridge --list` prints them with
 descriptions; the exact `data` shapes are in
 [skills/sysbridge-client/SKILL.md](skills/sysbridge-client/SKILL.md).
 
@@ -179,7 +185,7 @@ says what will be evicted.
   `--origins`. Allowed → reflected with `Vary: Origin`. Anything else → **403
   with no CORS headers**, so a remote page cannot read a byte. No Origin (curl)
   → allowed: the gate protects the browser, not the shell.
-- **Actions, installs and uninstalls need a token** from `$XDG_RUNTIME_DIR/sysbridge/token`
+- **Actions, installs, uninstalls and model load/unload need a token** from `$XDG_RUNTIME_DIR/sysbridge/token`
   (0600, created at start, never served). Constant-time compare.
 - **Nothing from the client is interpreted** beyond probe/action names
   (`^[a-z0-9_]{1,32}$`, must exist) and the `confirm` boolean.
@@ -203,7 +209,7 @@ dashboard uses (including `?autoload=false`), and a done-checklist.
 
 ```bash
 ./install.sh --dry-run                # what the installer would do on this machine
-python -m unittest discover tests     # 55 tests: parsers, registry, apps store, CORS/token/apps API over a socket
+python -m unittest discover tests     # 64 tests: parsers, registry, apps store, llama upstreams (fake server), CORS/token API over a socket
 python -m bridge --once rocm_pids     # any probe, as JSON, exit 1 on error
 python -m bridge --list
 python -m bridge --port 8182          # launcher at http://localhost:8182/ without the port-80 sysctl
@@ -219,6 +225,7 @@ Layout:
 bridge/
   __main__.py   argparse: --port --bind --origins --actions-file --apps-root --once NAME --list --token
   server.py     ThreadingHTTPServer, routing, static apps, CORS, SSE, token check
+  llama.py      llama-server upstreams as probes (llama, llama_slots) + load/unload
   apps.py       installed apps: manifests from <title>/<meta>, install/replace/uninstall to .trash, traversal-safe resolve
   www/launcher.html   the home screen at /
   registry.py   @probe registry, per-probe TTL cache + lock, async refresh, error isolation
