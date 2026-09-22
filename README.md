@@ -58,39 +58,37 @@ numbers, is in [HANDOVER.md](HANDOVER.md).
 ```bash
 git clone https://github.com/fuzzy-logic/sysbridge ~/ai/sysbridge
 cd ~/ai/sysbridge
-python -m bridge --once gpu                      # works before any service exists
-python -m bridge --port 8182                     # try it: http://localhost:8182/
+./install.sh
 ```
 
-**Port 80.** The default port is 80 so the launcher is just `http://localhost/`.
-A user process may only bind ports below 1024 after a one-time kernel setting
-(needs root; it lowers the threshold for every user on the machine, and is
-reversed by deleting the file and setting the value back to 1024):
+That is the whole install. The script:
+
+1. **Runs the one privileged step** (asks for sudo once): writes
+   `/etc/sysctl.d/80-sysbridge.conf` with `net.ipv4.ip_unprivileged_port_start = 80`
+   so a user service may bind port 80 and the launcher is plain
+   `http://localhost/`. This lowers the threshold for every user on the
+   machine. `setcap` on the Python binary was deliberately not used; it would
+   grant the capability to every Python script.
+2. Symlinks `systemd/sysbridge-http.service` into `~/.config/systemd/user/`, so
+   `git pull` updates it.
+3. Writes a drop-in with this machine's paths (`SYSBRIDGE_DIR`, port). It never
+   overwrites an existing drop-in.
+4. `systemctl --user enable --now sysbridge-http`, then waits for
+   `/v1/health` and prints the URL.
+
+Nothing else. Uploaded apps live in `~/.local/state/sysbridge/apps/`
+(`StateDirectory=sysbridge`).
 
 ```bash
-sudo sh -c 'printf "net.ipv4.ip_unprivileged_port_start = 80\n" > /etc/sysctl.d/80-sysbridge.conf && sysctl -p /etc/sysctl.d/80-sysbridge.conf'
+./install.sh --dry-run                # show every step, change nothing
+./install.sh --port 8182              # no sysctl, no sudo; launcher at http://localhost:8182/
+./install.sh --uninstall              # stop, disable, remove symlink + drop-in; keeps your apps
+./install.sh --uninstall --purge-sysctl   # also remove the sysctl file (sudo)
+python -m bridge --port 8182          # or just run it in a terminal, no install at all
 ```
 
-Without it the bridge exits with that exact instruction rather than silently
-picking another port. `setcap` on the Python binary was deliberately not used:
-it would grant the capability to every Python script.
-
-**As a user service:**
-
-```bash
-ln -s ~/ai/sysbridge/systemd/sysbridge.service ~/.config/systemd/user/
-mkdir -p ~/.config/systemd/user/sysbridge.service.d
-cp systemd/sysbridge.service.d/local.conf.example ~/.config/systemd/user/sysbridge.service.d/local.conf
-$EDITOR ~/.config/systemd/user/sysbridge.service.d/local.conf   # SYSBRIDGE_DIR=%h/ai/sysbridge
-systemctl --user daemon-reload
-systemctl --user enable --now sysbridge
-xdg-open http://localhost/
-```
-
-The unit is symlinked, not copied, so `git pull` updates it; machine-specific
-values live in the drop-in, never in the repo. Uploaded apps live in
-`~/.local/state/sysbridge/apps/` (`StateDirectory=sysbridge`). Nothing is
-enabled by cloning.
+Without the sysctl, the bridge on port 80 exits with that exact instruction
+rather than silently picking another port.
 
 ## Apps
 
@@ -197,6 +195,7 @@ dashboard uses (including `?autoload=false`), and a done-checklist.
 ## Development
 
 ```bash
+./install.sh --dry-run                # what the installer would do on this machine
 python -m unittest discover tests     # 55 tests: parsers, registry, apps store, CORS/token/apps API over a socket
 python -m bridge --once rocm_pids     # any probe, as JSON, exit 1 on error
 python -m bridge --list

@@ -1,5 +1,5 @@
-# Copy to ~/.config/systemd/user/sysbridge.service.d/local.conf (or run
-# `systemctl --user edit sysbridge` and paste), then `systemctl --user daemon-reload`.
+# Copy to ~/.config/systemd/user/sysbridge-http.service.d/local.conf (or run
+# `systemctl --user edit sysbridge-http` and paste), then `systemctl --user daemon-reload`.
 # Only the values that differ from the unit's defaults belong here.
 [Service]
 Environment=SYSBRIDGE_DIR=%h/ai/sysbridge

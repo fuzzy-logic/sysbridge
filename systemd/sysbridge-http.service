@@ -6,8 +6,8 @@ After=default.target
 
 [Service]
 Type=simple
-# Override these in a drop-in (systemctl --user edit sysbridge), never here, so a
-# git pull does not clobber your paths. See sysbridge.service.d/local.conf.example.
+# Override these in a drop-in (systemctl --user edit sysbridge-http), never here, so a
+# git pull does not clobber your paths. See sysbridge-http.service.d/local.conf.example.
 Environment=SYSBRIDGE_PYTHON=/usr/bin/python3
 Environment=SYSBRIDGE_DIR=%h/.local/share/sysbridge
 # 80 so the launcher is plain http://localhost/ . A user service may only bind

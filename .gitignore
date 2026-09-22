@@ -10,7 +10,7 @@ __pycache__/
 config/actions.json
 
 # systemd drop-in with machine paths lives in ~/.config, not here
-systemd/sysbridge.service.d/local.conf
+systemd/sysbridge-http.service.d/local.conf
 
 # editor / OS noise
 .venv/
