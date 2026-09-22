@@ -486,9 +486,54 @@ dashboard talks only to its own origin, like any upload:
 - `SYSBRIDGE_ROUTER_URL` is gone; `router_models` uses the upstream named
   `router`. 64 tests, including a fake llama-server for `llama.py`.
 
+## Phase 5 — app store, per-app origins, four apps (done 2026-09-22)
+
+Approved decisions: per-app origins **yes**; WTOP read-only; WTERM deferred;
+Web-File rooted at the home directory.
+
+- **Per-app origins.** Each app is served at `http://<slug>.localhost/`
+  (Host routing in `server.py`; `*.localhost` resolves to loopback in
+  browsers and systemd-resolved with no setup; the bridge also listens on
+  `::1` because the resolver answers that first). Origin rule gains
+  `^http://[a-z0-9-]+\.localhost(:\d+)?$`. `/apps/<slug>/` stays as fallback.
+  The launcher hands an app its token in the URL fragment; the injected home
+  script stores it in that origin and strips it. **Apps must read the token at
+  call time** — the handoff lands after the app's own script has run (the
+  dashboard had this bug).
+- **Two tokens**: `token` (installs, actions, load/unload, store install) and
+  `token-sensitive` (`/v1/fs`), both 0600 in `$XDG_RUNTIME_DIR/sysbridge/`.
+  Apps never store the sensitive one; Web-File keeps it in page memory.
+- **Home button → menu** (`home_button()` in `server.py`): absolute launcher
+  link, list of installed apps from `/v1/apps`, token state. Injected into
+  every app HTML response, never the launcher.
+- **Store**: `store/<slug>/index.html`; `bridge/store.py` (`validate()` is the
+  PR check run by `tests/test_store.py`), `GET /v1/store`, `POST
+  /v1/store/<slug>/install`; built-in **App Store** app at `apps/app-store/`.
+- **WTOP** (`store/wtop/`) on the new `top` probe (`bridge/top.py`: /proc
+  deltas, 100 % = one core, top 200, 1.5 s async). Read-only by decision.
+- **ChatBridge** (`store/chatbridge/`) on `POST /v1/llama/<server>/chat`:
+  SSE passthrough of `/v1/chat/completions`, fields whitelisted, **loaded
+  models only** (409 otherwise) so chat can never load or evict, no token,
+  ≤ 4 concurrent. This replaces the "Router UI" link tile to llama-server's
+  bundled web UI, which cannot be a single file (it is compiled into the binary).
+- **Web-File** (`store/web-file/`) on `GET /v1/fs/{roots,ls,stat,read,download}`
+  (`bridge/fs.py`): realpath containment inside roots from
+  `~/.config/sysbridge/fs.json` (absent = home), hidden off by default,
+  read-only, sensitive token.
+- **WTERM deferred**: under `ProtectHome=read-only` a shell cannot do real
+  work, and it is the one feature where a bug is total compromise. Shape if
+  wanted: separate opt-in unit, own origin, sensitive token, one session,
+  idle timeout, logged.
+
+Verified in the browser on the live service: token handoff into
+`llama-dash.localhost` with the hash stripped; home menu listing apps; App
+Store installing all three via its UI; WTOP live (32 cores, 700 tasks);
+ChatBridge streamed "pong" from the loaded router model in 206 ms; Web-File
+unlocked, listed `~`, no token in any storage. 92 tests.
+
 ## Phase 4 — per-app command permissions (idea, not scheduled)
 
-An app declares the CLI commands it wants (in its manifest / a meta tag); the
+Now feasible: per-app origins give the bridge a browser-enforced caller identity (the `Origin` header). An app declares the CLI commands it wants (in its manifest / a meta tag); the
 launcher's per-app settings view lists them and the user approves each one, or
 all, per app. The bridge then exposes only approved commands to that app.
 Design consequences taken *now* so this fits later: every app has a manifest
